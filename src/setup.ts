@@ -22,13 +22,12 @@ export async function setup(directory: Directory): Promise<void> {
     const user = directory.users[index];
     if (!user) throw new Error('Choose one of the numbered people.');
     const available = directory.channels.filter(channel => channel.joined);
-    if (!available.length) throw new Error('Invite the Codex bot to your project channels in Slack, then rerun setup.');
-    console.log('\nChoose channels to bind:');
+    console.log('\nOptionally choose channels now, or invite the bot later and choose folders in Slack:');
     available.forEach((channel, i) => console.log(`  ${i + 1}. #${channel.name}`));
-    const selected = await ui.question('Channel numbers, separated by commas: ');
-    if (!/^\s*\d+(\s*,\s*\d+)*\s*$/.test(selected)) throw new Error('Enter channel numbers separated by commas.');
+    const selected = available.length ? await ui.question('Channel numbers, separated by commas (Enter to skip): ') : '';
+    if (selected.trim() && !/^\s*\d+(\s*,\s*\d+)*\s*$/.test(selected)) throw new Error('Enter channel numbers separated by commas.');
     const channels: Record<string, string> = {};
-    for (const n of new Set(selected.split(',').map(Number))) {
+    for (const n of new Set(selected.trim() ? selected.split(',').map(Number) : [])) {
       const channel = available[n - 1];
       if (!channel) throw new Error(`Invalid channel number: ${n}`);
       const suggested = channel.name === 'controller' ? '~/work' : `~/work/projects/${channel.name}`;

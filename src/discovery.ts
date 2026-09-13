@@ -5,7 +5,7 @@ import { parseConfig, expandPath, record, type Config } from './config.ts';
 
 export type Member = { id: string; name: string; label: string };
 export type Conversation = { id: string; name: string; joined: boolean };
-export type Directory = { teamId: string; teamName: string; users: Member[]; channels: Conversation[] };
+export type Directory = { teamId: string; teamName: string; botUserId?: string; users: Member[]; channels: Conversation[] };
 export type Pins = { teamId: string; users: Record<string, string>; channels: Record<string, string> };
 type Api = { apiCall: (method: string, options?: Record<string, unknown>) => Promise<unknown> };
 export const configPath = (): string => process.env.CODEX_SLACK_CONFIG ?? 'config.json';
@@ -50,7 +50,7 @@ export async function discover(api: Api): Promise<Directory> {
     list('conversations.list', 'channels', { types: 'public_channel,private_channel', exclude_archived: true }),
   ]);
   return {
-    teamId: auth.team_id, teamName: String(auth.team ?? 'Slack workspace'),
+    teamId: auth.team_id, teamName: String(auth.team ?? 'Slack workspace'), botUserId: typeof auth.user_id === 'string' ? auth.user_id : undefined,
     users: users.filter(user => !user.deleted && !user.is_bot && !user.is_app_user && user.id !== 'USLACKBOT' && typeof user.id === 'string' && typeof user.name === 'string')
       .map(user => ({ id: String(user.id), name: String(user.name), label: String(record(user.profile).display_name || user.real_name || user.name) }))
       .sort((a, b) => a.name.localeCompare(b.name)),

@@ -29,7 +29,7 @@ cp .env.example .env
 1. Create a Slack app **from a manifest** using the complete JSON in [Slack app manifest](#slack-app-manifest--paste-into-slack) below, then install it in your workspace.
 2. Add **both** tokens to `.env`: the **Bot User OAuth Token** (`xoxb-…`) from **OAuth & Permissions → Install to Workspace** goes in `SLACK_BOT_TOKEN`. An **App-Level Token** (`xapp-…`) from **Basic Information → App-Level Tokens**, with `connections:write`, goes in `SLACK_APP_TOKEN`. The bot token discovers your workspace and sends replies; the app token connects Socket Mode. Neither can replace the other. No public HTTP endpoint is needed.
 3. Invite the bot to your project channels in Slack. The app listens to ordinary human messages, without requiring an @mention. Use dedicated channels.
-4. Run **`npm run setup`**. It discovers your workspace, lets you choose yourself and your channels from numbered lists, asks for each channel's folder, and writes `config.json`. All folders must already exist. No Slack IDs to find or copy.
+4. Run **`npm run setup`**. It discovers your workspace, lets you choose yourself, and writes `config.json`. Channel selection is optional: skip it to choose directories in Slack instead. All folders must already exist. No Slack IDs to find or copy.
 5. Run `npm run doctor` to check Slack access, channel membership, folders, and Codex login without starting a model turn. Then `npm start`.
 
 Already installed an earlier version? Apply the updated manifest under **Slack → App Manifest**, then **reinstall the app** under OAuth & Permissions to grant `users:read`, `channels:read`, and `groups:read`. These let setup resolve readable names; no email permission is requested. Keep your existing `.env`.
@@ -44,7 +44,7 @@ In Slack's **Create New App → From a manifest** flow, choose your workspace an
   "features": { "bot_user": { "display_name": "Codex", "always_online": false } },
   "oauth_config": { "scopes": { "bot": ["chat:write", "channels:history", "groups:history", "users:read", "channels:read", "groups:read"] } },
   "settings": {
-    "event_subscriptions": { "bot_events": ["message.channels", "message.groups"] },
+    "event_subscriptions": { "bot_events": ["message.channels", "message.groups", "member_joined_channel"] },
     "interactivity": { "is_enabled": true },
     "socket_mode_enabled": true,
     "org_deploy_enabled": false,
@@ -73,7 +73,9 @@ The bridge resolves names to IDs internally and saves those bindings in `stateDi
 
 Optional fields: `stateDir` defaults to `~/.local/state/codex-slack`; `codexBin` defaults to `codex`. Set `codexBin` to an absolute executable path if your service cannot find Codex. Arguments and shell commands are not accepted there. `CODEX_SLACK_CONFIG` selects a different config file. Relative paths resolve against the daemon's working directory.
 
-New sessions use the channel's configured directory. Existing thread bindings retain their original directory, even if you change the channel configuration. Restart the daemon after configuration edits. Removing a channel disables delivery to it, including queued outputs.
+You can also start with just `{"users":["@earonesty"]}` and choose directories in Slack. Invite the running bot to an unbound channel: it asks which directory to use, with a **Choose directory** button. Only configured users can open or submit the dialog; no separate admin role is needed. Enter an existing absolute path or `~/…` on the daemon's machine. The binding is saved in SQLite and survives restarts. Startup also checks already-joined channels for missed invitations. Use `!bind` if a prompt was lost. Messages sent before binding are not replayed into Codex.
+
+Apply the updated Slack manifest to subscribe to `member_joined_channel`, then restart the daemon. Manual channel configuration takes precedence over saved Slack bindings. New sessions use the channel's directory; existing thread bindings retain their original directory. Restart after configuration edits. To disable a channel with a saved Slack binding, remove the bot from that channel; removing only its manual config entry does not remove the saved binding.
 
 ## Daily use
 
@@ -86,6 +88,7 @@ Write a new message in a configured channel to start work. Reply in that message
 | `!status` | Show the session ID, directory, status, and latest final answer |
 | `!stop` | Interrupt the active turn |
 | `!help` | Show commands |
+| `!bind` | Show the directory picker in an unbound channel |
 
 Commands must be the entire message. Prefix another character if you want to discuss a literal command. Questions and approvals use explicit controls; ordinary replies are always prompts. Closing an answer modal leaves the question pending; use its Cancel button to dismiss it.
 

@@ -34,7 +34,6 @@ export function parseConfig(value: unknown): Config {
     if (!statSync(resolved).isDirectory()) throw new Error(`Channel ${id} cwd is not a directory`);
     channels[id] = { cwd: resolved };
   }
-  if (!Object.keys(channels).length) throw new Error('At least one channel binding is required');
   if (raw.stateDir !== undefined && (typeof raw.stateDir !== 'string' || !raw.stateDir.trim())) throw new Error('Invalid stateDir');
   if (raw.codexBin !== undefined && (typeof raw.codexBin !== 'string' || !raw.codexBin.trim())) throw new Error('Invalid codexBin');
   return {
@@ -45,6 +44,10 @@ export function parseConfig(value: unknown): Config {
 }
 
 export function authorized(config: Config, team: unknown, user: unknown, channel: unknown): boolean {
-  return team === config.teamId && typeof user === 'string' && config.allowedUserIds.includes(user)
+  return operator(config, team, user)
     && typeof channel === 'string' && Object.hasOwn(config.channels, channel);
+}
+
+export function operator(config: Config, team: unknown, user: unknown): boolean {
+  return team === config.teamId && typeof user === 'string' && config.allowedUserIds.includes(user);
 }

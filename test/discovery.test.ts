@@ -49,7 +49,7 @@ test('legacy ID configuration remains usable', () => {
 
 test('discovery paginates both directories and excludes bots and inactive accounts', async () => {
   const result = await discover({ apiCall: async (method, options) => {
-    if (method === 'auth.test') return { ok: true, team_id: 'T123', team: 'Workspace' };
+    if (method === 'auth.test') return { ok: true, team_id: 'T123', team: 'Workspace', user_id: 'UBOT' };
     if (method === 'users.list') return options?.cursor
       ? { members: [{ id: 'U123', name: 'erik', profile: { display_name: 'Erik' } }, { id: 'Uold', name: 'old', deleted: true }] }
       : { members: [{ id: 'B123', name: 'robot', is_bot: true }], response_metadata: { next_cursor: 'users-next' } };
@@ -58,6 +58,7 @@ test('discovery paginates both directories and excludes bots and inactive accoun
       : { channels: [], response_metadata: { next_cursor: 'channels-next' } };
   } });
   assert.equal(result.teamName, 'Workspace');
+  assert.equal(result.botUserId, 'UBOT');
   assert.deepEqual(result.users.map(user => user.name), ['erik']);
   assert.deepEqual(result.channels.map(channel => channel.name), ['controller']);
 });

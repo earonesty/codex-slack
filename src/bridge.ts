@@ -87,7 +87,7 @@ export class Bridge {
       if (message.unsupported) {
         this.say(binding.key, 'Attachments are not supported in version 0.1. Paste the relevant text; this message was not sent to Codex.');
       } else if (message.text.trim() === '!help') {
-        this.say(binding.key, 'Top-level messages start Codex sessions; thread replies continue or steer them. Commands: !status, !stop, !help. A new top-level message starts fresh.');
+        this.say(binding.key, 'Top-level messages start Codex sessions; thread replies continue or steer them. Commands: !status, !stop, !help. Use !bind in an unbound channel to choose its directory. A new top-level message starts fresh.');
       } else if (message.text.trim() === '!status') {
         this.say(binding.key, binding.thread ? await this.codex.status(binding.thread) : `No Codex session yet. Directory: ${binding.cwd}`);
       } else if (message.text.trim() === '!stop') {

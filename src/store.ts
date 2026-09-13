@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 export type Binding = { key: string; channel: string; root: string; cwd: string; thread: string | null };
 export type Incoming = Binding & { id: string; user: string; text: string; unsupported: boolean };
 export type Delivery = { id: string; key: string; payload: string };
+export type ChannelSetup = { team: string; channel: string; token: string; cwd: string | null; prompted: number };
 
 /** Only bridge-owned state lives here. Never reads or writes Codex's files. */
 export class Store {
@@ -25,9 +26,29 @@ export class Store {
         id TEXT PRIMARY KEY, key TEXT NOT NULL, payload TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending'
       );
+      CREATE TABLE IF NOT EXISTS channel_setup (
+        team TEXT NOT NULL, channel TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
+        cwd TEXT, prompted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(team,channel)
+      );
     `);
   }
   close(): void { this.db.close(); }
+  channelSetups(team: string): ChannelSetup[] {
+    return this.db.prepare('SELECT * FROM channel_setup WHERE team=?').all(team) as ChannelSetup[];
+  }
+  setupByToken(token: string): ChannelSetup | undefined {
+    return this.db.prepare('SELECT * FROM channel_setup WHERE token=?').get(token) as ChannelSetup | undefined;
+  }
+  ensureChannelSetup(team: string, channel: string): ChannelSetup {
+    this.db.prepare('INSERT OR IGNORE INTO channel_setup(team,channel,token) VALUES(?,?,?)').run(team, channel, randomUUID());
+    return this.db.prepare('SELECT * FROM channel_setup WHERE team=? AND channel=?').get(team, channel) as ChannelSetup;
+  }
+  claimSetupPrompt(token: string): boolean {
+    return this.db.prepare('UPDATE channel_setup SET prompted=1 WHERE token=? AND prompted=0 AND cwd IS NULL').run(token).changes > 0;
+  }
+  saveChannelDirectory(token: string, cwd: string): boolean {
+    return this.db.prepare('UPDATE channel_setup SET cwd=? WHERE token=? AND cwd IS NULL').run(cwd, token).changes > 0;
+  }
   get(key: string): Binding | undefined {
     return this.db.prepare('SELECT * FROM bindings WHERE key=?').get(key) as Binding | undefined;
   }

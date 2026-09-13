@@ -10,6 +10,7 @@ import { Rpc } from './rpc.ts';
 import { Codex } from './codex.ts';
 import { Store } from './store.ts';
 import { Bridge } from './bridge.ts';
+import { Onboarding } from './onboarding.ts';
 
 async function main(): Promise<void> {
   process.umask(0o077);
@@ -43,8 +44,44 @@ async function main(): Promise<void> {
     await app.client.chat.postMessage({ channel: binding.channel, thread_ts: binding.root,
       text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false, parse: 'none' });
   });
+  const onboarding = new Onboarding(config, store, async (channel, message) => {
+    await app.client.chat.postMessage({ channel, text: message.text, blocks: message.blocks,
+      unfurl_links: false, unfurl_media: false, parse: 'none' });
+  });
+  app.event('member_joined_channel', async ({ body, event, context }) => {
+    await onboarding.joined(record(body).team_id, event, directory.botUserId ?? context.botUserId ?? '');
+  });
   app.event('message', async ({ body, event }) => {
-    bridge.ingest(record(body).team_id, event);
+    const team = record(body).team_id;
+    if (!await onboarding.message(team, event)) bridge.ingest(team, event);
+  });
+  app.action('bind:open', async ({ ack, body, action, client }) => {
+    await ack();
+    const payload = record(body);
+    const channel = record(payload.channel).id;
+    const user = record(payload.user).id;
+    try {
+      const view = onboarding.modal(String(record(action).value), record(payload.team).id, user, channel);
+      await client.views.open({ trigger_id: String(payload.trigger_id), view });
+    } catch {
+      await client.chat.postEphemeral({ channel: String(channel), user: String(user),
+        text: 'Only configured users can choose a directory. This channel may already be bound; otherwise try !bind again.' });
+    }
+  });
+  app.view('bind:directory', async ({ ack, body, view }) => {
+    let binding: { channel: string; cwd: string };
+    try {
+      binding = onboarding.bind(view.private_metadata, record(body.team).id, body.user.id,
+        view.state.values.directory?.path?.value ?? '');
+    } catch (error) {
+      await ack({ response_action: 'errors', errors: { directory: error instanceof Error ? error.message : 'Could not save this binding.' } });
+      return;
+    }
+    await ack();
+    await app.client.chat.postMessage({ channel: binding.channel,
+      text: 'Directory saved. Send a new top-level message to start a Codex session.',
+      blocks: [{ type: 'section', text: { type: 'plain_text', text: `Bound to ${binding.cwd}. Send a new top-level message to start a Codex session.` } }],
+      unfurl_links: false, unfurl_media: false, parse: 'none' });
   });
   app.action(/^cs:/, async ({ ack, body, action, client }) => {
     await ack();
@@ -99,6 +136,9 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { void stop(); });
   try {
     await rpc.start();
+    for (const channel of directory.channels.filter(channel => channel.joined)) {
+      await onboarding.ask(config.teamId, channel.id);
+    }
     bridge.start();
     await app.start();
     console.log(`Codex Slack listening in ${Object.keys(config.channels).length} configured channels.`);
