@@ -27,13 +27,34 @@ cp config.example.json config.json
 cp .env.example .env
 ```
 
-1. Create a Slack app **from a manifest** using [`slack-manifest.json`](slack-manifest.json), then install it in your workspace.
+1. Create a Slack app **from a manifest** using the complete JSON in [Slack app manifest](#slack-app-manifest--paste-into-slack) below, then install it in your workspace.
 2. Under Basic Information → App-Level Tokens, create an app token with `connections:write`. Put it in `.env` as `SLACK_APP_TOKEN` (`xapp-…`). Put the bot token from OAuth & Permissions in `SLACK_BOT_TOKEN` (`xoxb-…`). Socket Mode needs no public HTTP endpoint.
 3. Edit `config.json`: set the workspace ID, your Slack member ID, and channel IDs with their local directories. Channel IDs remain stable across renames. All directories must already exist.
 4. Invite the bot to those channels. The app listens to ordinary human messages, without requiring an @mention. Use dedicated channels.
 5. Run `npm run doctor` to validate folders and the Codex handshake/login without starting a model turn. Then `npm start`.
 
-Example configuration:
+### Slack app manifest — paste into Slack
+
+In Slack's **Create New App → From a manifest** flow, choose your workspace and the **JSON** tab, then paste this entire block, including the outer braces. This is the contents of [`slack-manifest.json`](slack-manifest.json) ([raw JSON](https://raw.githubusercontent.com/earonesty/codex-slack/main/slack-manifest.json)).
+
+```json
+{
+  "display_information": { "name": "Codex Slack", "description": "Direct access to local Codex sessions", "background_color": "#202123" },
+  "features": { "bot_user": { "display_name": "Codex", "always_online": false } },
+  "oauth_config": { "scopes": { "bot": ["chat:write", "channels:history", "groups:history"] } },
+  "settings": {
+    "event_subscriptions": { "bot_events": ["message.channels", "message.groups"] },
+    "interactivity": { "is_enabled": true },
+    "socket_mode_enabled": true,
+    "org_deploy_enabled": false,
+    "token_rotation_enabled": false
+  }
+}
+```
+
+### Local daemon configuration — save as `config.json`
+
+The following JSON belongs in `config.json` on the machine running the bridge. **Do not paste it into Slack's manifest editor.** Replace the example IDs with your workspace, member, and channel IDs.
 
 ```json
 {
