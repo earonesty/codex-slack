@@ -23,15 +23,16 @@ git clone https://github.com/earonesty/codex-slack.git
 cd codex-slack
 npm ci --ignore-scripts
 npm run build
-cp config.example.json config.json
 cp .env.example .env
 ```
 
 1. Create a Slack app **from a manifest** using the complete JSON in [Slack app manifest](#slack-app-manifest--paste-into-slack) below, then install it in your workspace.
-2. Under Basic Information → App-Level Tokens, create an app token with `connections:write`. Put it in `.env` as `SLACK_APP_TOKEN` (`xapp-…`). Put the bot token from OAuth & Permissions in `SLACK_BOT_TOKEN` (`xoxb-…`). Socket Mode needs no public HTTP endpoint.
-3. Edit `config.json`: set the workspace ID, your Slack member ID, and channel IDs with their local directories. Channel IDs remain stable across renames. All directories must already exist.
-4. Invite the bot to those channels. The app listens to ordinary human messages, without requiring an @mention. Use dedicated channels.
-5. Run `npm run doctor` to validate folders and the Codex handshake/login without starting a model turn. Then `npm start`.
+2. Add **both** tokens to `.env`: the **Bot User OAuth Token** (`xoxb-…`) from **OAuth & Permissions → Install to Workspace** goes in `SLACK_BOT_TOKEN`. An **App-Level Token** (`xapp-…`) from **Basic Information → App-Level Tokens**, with `connections:write`, goes in `SLACK_APP_TOKEN`. The bot token discovers your workspace and sends replies; the app token connects Socket Mode. Neither can replace the other. No public HTTP endpoint is needed.
+3. Invite the bot to your project channels in Slack. The app listens to ordinary human messages, without requiring an @mention. Use dedicated channels.
+4. Run **`npm run setup`**. It discovers your workspace, lets you choose yourself and your channels from numbered lists, asks for each channel's folder, and writes `config.json`. All folders must already exist. No Slack IDs to find or copy.
+5. Run `npm run doctor` to check Slack access, channel membership, folders, and Codex login without starting a model turn. Then `npm start`.
+
+Already installed an earlier version? Apply the updated manifest under **Slack → App Manifest**, then **reinstall the app** under OAuth & Permissions to grant `users:read`, `channels:read`, and `groups:read`. These let setup resolve readable names; no email permission is requested. Keep your existing `.env`.
 
 ### Slack app manifest — paste into Slack
 
@@ -41,7 +42,7 @@ In Slack's **Create New App → From a manifest** flow, choose your workspace an
 {
   "display_information": { "name": "Codex Slack", "description": "Direct access to local Codex sessions", "background_color": "#202123" },
   "features": { "bot_user": { "display_name": "Codex", "always_online": false } },
-  "oauth_config": { "scopes": { "bot": ["chat:write", "channels:history", "groups:history"] } },
+  "oauth_config": { "scopes": { "bot": ["chat:write", "channels:history", "groups:history", "users:read", "channels:read", "groups:read"] } },
   "settings": {
     "event_subscriptions": { "bot_events": ["message.channels", "message.groups"] },
     "interactivity": { "is_enabled": true },
@@ -54,22 +55,23 @@ In Slack's **Create New App → From a manifest** flow, choose your workspace an
 
 ### Local daemon configuration — save as `config.json`
 
-The following JSON belongs in `config.json` on the machine running the bridge. **Do not paste it into Slack's manifest editor.** Replace the example IDs with your workspace, member, and channel IDs.
+Setup writes this file for you. If you prefer to edit it yourself, use Slack **handles** and **channel names**:
 
 ```json
 {
-  "teamId": "T0123456789",
-  "allowedUserIds": ["U0123456789"],
+  "users": ["@earonesty"],
   "channels": {
-    "C0123456789": { "cwd": "~/work" },
-    "C9876543210": { "cwd": "~/work/projects/dirtsignal" }
-  },
-  "stateDir": "~/.local/state/codex-slack",
-  "codexBin": "codex"
+    "#controller": "~/work",
+    "#dirtsignal": "~/work/projects/dirtsignal"
+  }
 }
 ```
 
-`CODEX_SLACK_CONFIG` selects a different config file. Relative paths resolve against the daemon's working directory. Set `codexBin` to an absolute executable path if your service cannot find Codex. Arguments and shell commands are not accepted there.
+This is local daemon configuration, **not** the Slack app manifest. Run `npm run discover` to list the actual handles and channel names visible to your bot. Handles come from Slack's account usernames; display names can differ, so the setup picker shows both. The workspace is discovered automatically from the bot token. The bot token identifies the bot, so setup still asks which human is allowed to control it.
+
+The bridge resolves names to IDs internally and saves those bindings in `stateDir/identities.json`. Reusing an old handle or channel name cannot silently transfer control to a different person/channel. A renamed user/channel retains its binding while the configured name stays the same. Old configurations using `teamId`, `allowedUserIds`, and channel IDs still work.
+
+Optional fields: `stateDir` defaults to `~/.local/state/codex-slack`; `codexBin` defaults to `codex`. Set `codexBin` to an absolute executable path if your service cannot find Codex. Arguments and shell commands are not accepted there. `CODEX_SLACK_CONFIG` selects a different config file. Relative paths resolve against the daemon's working directory.
 
 New sessions use the channel's configured directory. Existing thread bindings retain their original directory, even if you change the channel configuration. Restart the daemon after configuration edits. Removing a channel disables delivery to it, including queued outputs.
 

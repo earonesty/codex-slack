@@ -2,7 +2,10 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { App } from '@slack/bolt';
-import { authorized, loadConfig, record } from './config.ts';
+import { WebClient } from '@slack/web-api';
+import { authorized, record } from './config.ts';
+import { botToken, discover, loadResolvedConfig } from './discovery.ts';
+import { printDirectory, setup } from './setup.ts';
 import { Rpc } from './rpc.ts';
 import { Codex } from './codex.ts';
 import { Store } from './store.ts';
@@ -10,20 +13,23 @@ import { Bridge } from './bridge.ts';
 
 async function main(): Promise<void> {
   process.umask(0o077);
-  const config = loadConfig();
+  const token = botToken();
+  const directory = await discover(new WebClient(token, { retryConfig: { retries: 0 }, timeout: 10_000 }));
+  if (process.argv.includes('--discover')) { printDirectory(directory); return; }
+  if (process.argv.includes('--setup')) { await setup(directory); return; }
+  const config = loadResolvedConfig(directory);
   const rpc = new Rpc(config.codexBin);
   if (process.argv.includes('--check')) {
     try {
       await rpc.start();
       const account = record(record(await rpc.request('account/read', {})).account);
       if (!Object.keys(account).length) throw new Error('Codex is not logged in. Run codex login first.');
-      console.log(`Configuration valid: ${Object.keys(config.channels).length} channels. Codex handshake and login check passed. No model turn was started.`);
+      console.log(`Connected to ${directory.teamName}: ${Object.keys(config.channels).length} channel bindings validated. Codex handshake and login check passed. No model turn was started.`);
     } finally { rpc.close(); }
     return;
   }
-  const token = process.env.SLACK_BOT_TOKEN;
   const appToken = process.env.SLACK_APP_TOKEN;
-  if (!token?.startsWith('xoxb-') || !appToken?.startsWith('xapp-')) throw new Error('Set SLACK_BOT_TOKEN and SLACK_APP_TOKEN');
+  if (!appToken?.startsWith('xapp-')) throw new Error('Set SLACK_APP_TOKEN to an app-level token (xapp-…) from Basic Information → App-Level Tokens, with connections:write.');
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   chmodSync(config.stateDir, 0o700);
   // Separate SQLite connection holds an OS-released crash-safe process lock.
@@ -92,8 +98,6 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => { void stop(); });
   process.on('SIGTERM', () => { void stop(); });
   try {
-    const auth = await app.client.auth.test();
-    if (auth.team_id !== config.teamId) throw new Error('Slack token belongs to a different workspace than teamId');
     await rpc.start();
     bridge.start();
     await app.start();

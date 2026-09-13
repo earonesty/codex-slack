@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -42,10 +42,6 @@ export function parseConfig(value: unknown): Config {
     stateDir: expandPath(raw.stateDir as string ?? '~/.local/state/codex-slack'),
     codexBin: raw.codexBin as string ?? 'codex',
   };
-}
-
-export function loadConfig(): Config {
-  return parseConfig(JSON.parse(readFileSync(process.env.CODEX_SLACK_CONFIG ?? 'config.json', 'utf8')));
 }
 
 export function authorized(config: Config, team: unknown, user: unknown, channel: unknown): boolean {

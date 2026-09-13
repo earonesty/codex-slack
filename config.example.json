@@ -1,10 +1,7 @@
 {
-  "teamId": "T0123456789",
-  "allowedUserIds": ["U0123456789"],
+  "users": ["@earonesty"],
   "channels": {
-    "C0123456789": { "cwd": "~/work" },
-    "C9876543210": { "cwd": "~/work/projects/dirtsignal" }
-  },
-  "stateDir": "~/.local/state/codex-slack",
-  "codexBin": "codex"
+    "#controller": "~/work",
+    "#dirtsignal": "~/work/projects/dirtsignal"
+  }
 }

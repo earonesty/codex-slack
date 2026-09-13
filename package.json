@@ -12,8 +12,10 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-transform-types --test test/*.test.ts",
     "start": "node --env-file-if-exists=.env dist/main.js",
-    "doctor": "node --env-file-if-exists=.env dist/main.js --check"
+    "doctor": "node --env-file-if-exists=.env dist/main.js --check",
+    "setup": "node --env-file-if-exists=.env dist/main.js --setup",
+    "discover": "node --env-file-if-exists=.env dist/main.js --discover"
   },
-  "dependencies": { "@slack/bolt": "^5.1.0" },
+  "dependencies": { "@slack/bolt": "^5.1.0", "@slack/web-api": "^8.1.1" },
   "devDependencies": { "@slack/types": "^3.1.0", "@types/node": "^24.0.0", "typescript": "^7.0.2" }
 }

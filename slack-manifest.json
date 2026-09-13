@@ -1,7 +1,7 @@
 {
   "display_information": { "name": "Codex Slack", "description": "Direct access to local Codex sessions", "background_color": "#202123" },
   "features": { "bot_user": { "display_name": "Codex", "always_online": false } },
-  "oauth_config": { "scopes": { "bot": ["chat:write", "channels:history", "groups:history"] } },
+  "oauth_config": { "scopes": { "bot": ["chat:write", "channels:history", "groups:history", "users:read", "channels:read", "groups:read"] } },
   "settings": {
     "event_subscriptions": { "bot_events": ["message.channels", "message.groups"] },
     "interactivity": { "is_enabled": true },
