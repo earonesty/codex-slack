@@ -1,0 +1,19 @@
+{
+  "name": "@earonesty/codex-slack",
+  "version": "0.1.0",
+  "description": "A small Slack Socket Mode bridge to native Codex app-server sessions.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": "github:earonesty/codex-slack",
+  "engines": { "node": ">=24.14.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-transform-types --test test/*.test.ts",
+    "start": "node --env-file-if-exists=.env dist/main.js",
+    "doctor": "node --env-file-if-exists=.env dist/main.js --check"
+  },
+  "dependencies": { "@slack/bolt": "^5.1.0" },
+  "devDependencies": { "@slack/types": "^3.1.0", "@types/node": "^24.0.0", "typescript": "^7.0.2" }
+}

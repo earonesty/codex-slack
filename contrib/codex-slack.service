@@ -1,0 +1,20 @@
+[Unit]
+Description=Slack bridge to native Codex sessions
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Edit these paths for your checkout and Node/Codex installation.
+WorkingDirectory=%h/work/projects/codex-slack
+EnvironmentFile=%h/work/projects/codex-slack/.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/node dist/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target

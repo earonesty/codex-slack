@@ -1,0 +1,10 @@
+{
+  "teamId": "T0123456789",
+  "allowedUserIds": ["U0123456789"],
+  "channels": {
+    "C0123456789": { "cwd": "~/work" },
+    "C9876543210": { "cwd": "~/work/projects/dirtsignal" }
+  },
+  "stateDir": "~/.local/state/codex-slack",
+  "codexBin": "codex"
+}
