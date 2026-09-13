@@ -8,7 +8,7 @@ const directory: Directory = {
   users: [{ id: 'U123', name: 'erik', label: 'Erik Aronesty' }],
   channels: [{ id: 'C123', name: 'controller', joined: true }],
 };
-const settings = { users: ['@erik'], channels: { '#controller': tmpdir() } };
+const settings = { root: tmpdir(), users: ['@erik'], channels: { '#controller': tmpdir() } };
 
 test('readable handles and channel names resolve without any configured IDs', () => {
   const { config, pins } = resolveSettings(settings, directory);
@@ -42,7 +42,7 @@ test('invalid people, ambiguous handles, missing membership, and wrong workspace
 });
 
 test('legacy ID configuration remains usable', () => {
-  const { config } = resolveSettings({ teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } } }, directory);
+  const { config } = resolveSettings({ root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } } }, directory);
   assert.deepEqual(config.allowedUserIds, ['U123']);
   assert.equal(config.channels.C123?.cwd, tmpdir());
 });

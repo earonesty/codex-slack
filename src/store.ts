@@ -30,9 +30,37 @@ export class Store {
         team TEXT NOT NULL, channel TEXT NOT NULL, token TEXT NOT NULL UNIQUE,
         cwd TEXT, prompted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(team,channel)
       );
+      CREATE TABLE IF NOT EXISTS channel_overrides (
+        team TEXT NOT NULL, channel TEXT NOT NULL, cwd TEXT, PRIMARY KEY(team,channel)
+      );
+      CREATE TABLE IF NOT EXISTS disabled_sessions (key TEXT PRIMARY KEY);
     `);
   }
   close(): void { this.db.close(); }
+  overrides(team: string): { channel: string; cwd: string | null }[] {
+    return this.db.prepare('SELECT channel,cwd FROM channel_overrides WHERE team=?').all(team) as { channel: string; cwd: string | null }[];
+  }
+  disabled(key: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM disabled_sessions WHERE key=?').get(key);
+  }
+  replaceDirectory(token: string, cwd: string, displaced: string[]): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const setup = this.setupByToken(token);
+      if (!setup || setup.cwd) throw new Error('This channel is already bound.');
+      for (const channel of displaced) {
+        this.db.prepare('INSERT OR REPLACE INTO channel_overrides VALUES(?,?,NULL)').run(setup.team, channel);
+        this.db.prepare('UPDATE channel_setup SET cwd=NULL, token=?, prompted=1 WHERE team=? AND channel=?').run(randomUUID(), setup.team, channel);
+        const prefix = `${setup.team}:${channel}:`;
+        this.db.prepare('INSERT OR IGNORE INTO disabled_sessions SELECT key FROM bindings WHERE substr(key,1,?)=?').run(prefix.length, prefix);
+      }
+      this.db.prepare("UPDATE inbox SET status='failed' WHERE status='pending' AND key IN (SELECT key FROM disabled_sessions)").run();
+      this.db.prepare("UPDATE outbox SET status='failed' WHERE status='pending' AND key IN (SELECT key FROM disabled_sessions)").run();
+      this.db.prepare('INSERT OR REPLACE INTO channel_overrides VALUES(?,?,?)').run(setup.team, setup.channel, cwd);
+      this.saveChannelDirectory(token, cwd);
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   channelSetups(team: string): ChannelSetup[] {
     return this.db.prepare('SELECT * FROM channel_setup WHERE team=?').all(team) as ChannelSetup[];
   }

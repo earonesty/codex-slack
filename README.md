@@ -60,6 +60,7 @@ Setup writes this file for you. If you prefer to edit it yourself, use Slack **h
 ```json
 {
   "users": ["@earonesty"],
+  "root": "~",
   "channels": {
     "#controller": "~/work",
     "#dirtsignal": "~/work/projects/dirtsignal"
@@ -75,7 +76,11 @@ Optional fields: `stateDir` defaults to `~/.local/state/codex-slack`; `codexBin`
 
 You can also start with just `{"users":["@earonesty"]}` and choose directories in Slack. Invite the running bot to an unbound channel: it asks which directory to use, with a **Choose directory** button. Only configured users can open or submit the dialog; no separate admin role is needed. Enter an existing absolute path or `~/…` on the daemon's machine. The binding is saved in SQLite and survives restarts. Startup also checks already-joined channels for missed invitations. Use `!bind` if a prompt was lost. Messages sent before binding are not replayed into Codex.
 
-Apply the updated Slack manifest to subscribe to `member_joined_channel`, then restart the daemon. Manual channel configuration takes precedence over saved Slack bindings. New sessions use the channel's directory; existing thread bindings retain their original directory. Restart after configuration edits. To disable a channel with a saved Slack binding, remove the bot from that channel; removing only its manual config entry does not remove the saved binding.
+`root` is the highest allowed binding directory (default: your home directory). For example, `"root": "/home/erik"` allows that directory and its descendants. Existing folders and symlinks are resolved before checking containment; siblings and symlink escapes are rejected. This is a binding restriction, not a Codex filesystem sandbox.
+
+Each exact directory has one channel owner. The directory picker shows a confirmation naming any channel that will be displaced; nested project bindings are unchanged. Confirming disables the displaced channel's existing threads and queued work, and requests interruption of active work (already-running tools may finish). Those old threads remain disabled even if the channel is later rebound; start a new Slack thread. Saved ownership decisions, including unbindings, override manual config entries across restarts. Duplicate directories in manual configuration are rejected.
+
+Apply the updated Slack manifest to subscribe to `member_joined_channel`, then restart the daemon. New sessions use the channel's directory; non-disabled existing threads retain their original directory only while it remains within the allowed root and is not owned by another channel. Restart after configuration edits. To disable a channel with a saved Slack binding, remove the bot from that channel; removing only its manual config entry does not remove the saved binding.
 
 ## Daily use
 

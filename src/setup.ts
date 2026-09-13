@@ -21,6 +21,7 @@ export async function setup(directory: Directory): Promise<void> {
     const index = /^\d+$/.test(selection.trim()) ? Number(selection) - 1 : -1;
     const user = directory.users[index];
     if (!user) throw new Error('Choose one of the numbered people.');
+    const root = (await ui.question('Highest allowed directory [~]: ')).trim() || '~';
     const available = directory.channels.filter(channel => channel.joined);
     console.log('\nOptionally choose channels now, or invite the bot later and choose folders in Slack:');
     available.forEach((channel, i) => console.log(`  ${i + 1}. #${channel.name}`));
@@ -34,7 +35,7 @@ export async function setup(directory: Directory): Promise<void> {
       const folder = await ui.question(`Folder for #${channel.name} [${suggested}]: `);
       channels[`#${channel.name}`] = folder.trim() || suggested;
     }
-    const config = { users: [`@${user.name}`], channels };
+    const config = { users: [`@${user.name}`], root, channels };
     resolveSettings(config, directory); // Validate directories and selections before writing.
     writeFileSync(configPath(), JSON.stringify(config, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
     console.log(`\nSaved ${configPath()}. Run npm run doctor, then npm start.`);

@@ -1,5 +1,5 @@
 import type { Config } from './config.ts';
-import { authorized, record } from './config.ts';
+import { allowedDirectory, authorized, record } from './config.ts';
 import { Codex } from './codex.ts';
 import { Interactions } from './interactions.ts';
 import { chunks, textMessage, type Message } from './messages.ts';
@@ -21,7 +21,11 @@ export class Bridge {
       catch { console.error('Could not record a Codex notification'); }
     });
     codex.rpc.on('request', (request: ServerRequest) => {
-      try { this.interactions.receive(request); }
+      try {
+        const binding = this.store.byThread(String(record(request.params).threadId ?? ''));
+        if (binding && !this.enabled(binding)) { codex.rpc.reject(request.id, 'Channel binding is disabled'); return; }
+        this.interactions.receive(request);
+      }
       catch {
         codex.rpc.reject(request.id, 'Bridge could not display the request');
         console.error('Could not display a Codex request');
@@ -40,6 +44,22 @@ export class Bridge {
     });
   }
   start(): void { this.store.recover(); this.drain(); void this.flush(); }
+  enabled(binding: Binding): boolean {
+    if (this.store.disabled(binding.key) || binding.key.split(':')[0] !== this.config.teamId || !this.config.channels[binding.channel]) return false;
+    if (Object.entries(this.config.channels).some(([channel, value]) => channel !== binding.channel && value.cwd === binding.cwd)) return false;
+    try { allowedDirectory(this.config.root, binding.cwd); }
+    catch { return false; }
+    return true;
+  }
+  async disableChannels(channels: string[]): Promise<void> {
+    for (const thread of this.running) {
+      const binding = this.store.byThread(thread);
+      if (!binding || !channels.includes(binding.channel)) continue;
+      this.interactions.clear(thread);
+      try { await this.codex.interrupt(thread); }
+      catch { console.error('Could not confirm interruption of disabled channel work.'); }
+    }
+  }
   async stop(): Promise<void> {
     this.stopped = true;
     this.codex.rpc.close();
@@ -81,7 +101,7 @@ export class Bridge {
     this.store.mark(message.id, 'dispatching');
     const binding = this.store.get(message.key)!;
     try {
-      if (!authorized(this.config, message.key.split(':')[0], message.user, binding.channel)) {
+      if (!this.enabled(binding) || !authorized(this.config, message.key.split(':')[0], message.user, binding.channel)) {
         this.store.mark(message.id, 'failed'); return;
       }
       if (message.unsupported) {
@@ -99,6 +119,7 @@ export class Bridge {
           this.store.bind(binding.key, binding.thread);
           this.say(binding.key, `Session started in ${binding.cwd}`);
         }
+        if (!this.enabled(binding)) { this.store.mark(message.id, 'failed'); return; }
         await this.codex.input(binding.thread, message.text);
       }
       this.store.mark(message.id, 'done');
@@ -118,6 +139,11 @@ export class Bridge {
     if (method === 'serverRequest/resolved') this.interactions.resolved(params.requestId, thread);
     const binding = this.store.byThread(thread);
     if (!binding) return;
+    if (!this.enabled(binding)) {
+      this.interactions.clear(thread);
+      if (method === 'turn/started') void this.codex.interrupt(thread).catch(() => console.error('Could not interrupt disabled channel work.'));
+      return;
+    }
     if (method === 'item/started') this.interactions.observe(thread, String(params.turnId), record(params.item));
     if (method === 'item/completed') {
       const item = record(params.item);
@@ -145,7 +171,7 @@ export class Bridge {
       while ((batch = this.store.deliveries()).length && !this.stopped) {
         for (const delivery of batch) {
           const binding = this.store.get(delivery.key);
-          if (!binding || binding.key.split(':')[0] !== this.config.teamId || !Object.hasOwn(this.config.channels, binding.channel)) { this.store.deliveryStatus(delivery.id, 'failed'); continue; }
+          if (!binding || !this.enabled(binding)) { this.store.deliveryStatus(delivery.id, 'failed'); continue; }
           this.store.deliveryStatus(delivery.id, 'sending');
           try {
             await this.post(binding, JSON.parse(delivery.payload) as Message);

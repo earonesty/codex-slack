@@ -1,21 +1,35 @@
-import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { View } from '@slack/types';
-import { expandPath, operator, record, type Config } from './config.ts';
+import { allowedDirectory, operator, record, type Config } from './config.ts';
 import type { Message } from './messages.ts';
 import { Store, type ChannelSetup } from './store.ts';
 
 export class Onboarding {
+  private confirmations = new Map<string, { token: string; team: unknown; user: unknown; cwd: string; displaced: string[]; expires: number }>();
   constructor(private config: Config, private store: Store,
-    private post: (channel: string, message: Message) => Promise<void>) {}
+    private post: (channel: string, message: Message) => Promise<void>,
+    private displaced: (channels: string[]) => void = () => {}) {
+    const overrides = store.overrides(config.teamId);
+    for (const saved of overrides) delete config.channels[saved.channel];
+    for (const saved of overrides) if (saved.cwd) {
+      for (const [channel, binding] of Object.entries(config.channels)) if (binding.cwd === saved.cwd) delete config.channels[channel];
+    }
+  }
 
   async ask(team: unknown, channel: unknown): Promise<void> {
     if (team !== this.config.teamId || typeof channel !== 'string' || !/^[CG][A-Z0-9]+$/.test(channel)) return;
     if (Object.hasOwn(this.config.channels, channel)) return;
     const setup = this.store.ensureChannelSetup(String(team), channel);
-    if (setup.cwd) {
-      // Restore only for channels the bot has joined; file configuration takes precedence.
-      try { this.config.channels[channel] = { cwd: this.directory(setup.cwd) }; }
+    const override = this.store.overrides(String(team)).find(row => row.channel === channel);
+    const saved = override ? override.cwd : setup.cwd;
+    if (saved) {
+      // Restore only for channels the bot has joined, using saved ownership decisions.
+      try {
+        const cwd = this.directory(saved);
+        if (Object.values(this.config.channels).some(binding => binding.cwd === cwd)) throw new Error('Duplicate saved binding');
+        this.config.channels[channel] = { cwd };
+      }
       catch { console.error('A saved channel directory is unavailable; restore it before continuing.'); }
       return;
     }
@@ -81,19 +95,56 @@ export class Onboarding {
         element: { type: 'plain_text_input', action_id: 'path', max_length: 2000 } }],
     };
   }
-  bind(token: string, team: unknown, user: unknown, folder: string): { channel: string; cwd: string } {
+  preview(token: string, team: unknown, user: unknown, folder: string): View {
+    this.pending(token, team, user);
+    const cwd = this.directory(folder.trim());
+    const displaced = this.conflicts(cwd);
+    const id = randomUUID();
+    for (const [key, value] of this.confirmations) if (value.expires < Date.now()) this.confirmations.delete(key);
+    this.confirmations.set(id, { token, team, user, cwd, displaced, expires: Date.now() + 600_000 });
+    return { type: 'modal', callback_id: 'bind:confirm', private_metadata: id,
+      title: { type: 'plain_text', text: 'Confirm binding' }, submit: { type: 'plain_text', text: 'Bind' },
+      blocks: [
+        { type: 'section', text: { type: 'plain_text', text: `Bind this channel to ${cwd}?` } },
+        { type: 'section', text: { type: 'mrkdwn', text: displaced.length
+          ? `This will unbind ${displaced.map(channel => `<#${channel}>`).join(', ')} and disable their existing threads and queued work. Active work will be interrupted (already-running tools may finish).`
+          : 'No other channel will be unbound. Nested project bindings are unchanged.' } },
+        { type: 'input', block_id: 'directory', label: { type: 'plain_text', text: 'Confirm' }, element: {
+          type: 'checkboxes', action_id: 'confirm', options: [{ text: { type: 'plain_text', text: 'Apply this binding' }, value: 'yes' }],
+        } },
+      ] };
+  }
+  confirm(id: string, team: unknown, user: unknown): { channel: string; cwd: string } {
+    const pending = this.confirmations.get(id);
+    if (!pending || pending.team !== team || pending.user !== user || pending.expires < Date.now()) throw new Error('Confirmation expired. Close this dialog and use !bind again.');
+    const result = this.bind(pending.token, team, user, pending.cwd, pending.displaced);
+    this.confirmations.delete(id);
+    return result;
+  }
+  private conflicts(cwd: string): string[] {
+    return [...new Set([
+      ...Object.entries(this.config.channels).filter(([, binding]) => binding.cwd === cwd).map(([channel]) => channel),
+      ...this.store.channelSetups(this.config.teamId).filter(row => row.cwd === cwd).map(row => row.channel),
+      ...this.store.overrides(this.config.teamId).filter(row => row.cwd === cwd).map(row => row.channel),
+    ])].sort();
+  }
+  bind(token: string, team: unknown, user: unknown, folder: string, confirmed: string[] = []): { channel: string; cwd: string } {
     const setup = this.pending(token, team, user);
     const cwd = this.directory(folder.trim());
-    if (!this.store.saveChannelDirectory(token, cwd)) throw new Error('This channel was already bound by another request.');
+    const displaced = this.conflicts(cwd);
+    if (JSON.stringify(displaced) !== JSON.stringify(confirmed)) throw new Error('Directory ownership changed. Close this dialog and use !bind to review the affected channels.');
+    this.store.replaceDirectory(token, cwd, displaced);
+    for (const channel of displaced) delete this.config.channels[channel];
     this.config.channels[setup.channel] = { cwd };
+    this.displaced(displaced);
     return { channel: setup.channel, cwd };
   }
   private directory(folder: string): string {
     if (!path.isAbsolute(folder) && folder !== '~' && !folder.startsWith('~/')) throw new Error('Use an absolute path or a path starting with ~/ on the Codex machine.');
-    try {
-      const resolved = realpathSync(expandPath(folder));
-      if (!statSync(resolved).isDirectory()) throw new Error('not a folder');
-      return resolved;
-    } catch { throw new Error('That directory does not exist on the Codex machine. Create it first, then try again.'); }
+    try { return allowedDirectory(this.config.root, folder); }
+    catch (error) {
+      if (error instanceof Error && error.message.includes('configured root')) throw error;
+      throw new Error('That directory does not exist on the Codex machine. Create it first, then try again.');
+    }
   }
 }

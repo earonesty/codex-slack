@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   const onboarding = new Onboarding(config, store, async (channel, message) => {
     await app.client.chat.postMessage({ channel, text: message.text, blocks: message.blocks,
       unfurl_links: false, unfurl_media: false, parse: 'none' });
-  });
+  }, channels => { void bridge.disableChannels(channels); });
   app.event('member_joined_channel', async ({ body, event, context }) => {
     await onboarding.joined(record(body).team_id, event, directory.botUserId ?? context.botUserId ?? '');
   });
@@ -69,10 +69,19 @@ async function main(): Promise<void> {
     }
   });
   app.view('bind:directory', async ({ ack, body, view }) => {
+    try {
+      const confirmation = onboarding.preview(view.private_metadata, record(body.team).id, body.user.id,
+        view.state.values.directory?.path?.value ?? '');
+      await ack({ response_action: 'update', view: confirmation });
+    } catch (error) {
+      await ack({ response_action: 'errors', errors: { directory: error instanceof Error ? error.message : 'Could not save this binding.' } });
+    }
+  });
+  app.view('bind:confirm', async ({ ack, body, view }) => {
     let binding: { channel: string; cwd: string };
     try {
-      binding = onboarding.bind(view.private_metadata, record(body.team).id, body.user.id,
-        view.state.values.directory?.path?.value ?? '');
+      if (!view.state.values.directory?.confirm?.selected_options?.some(option => option.value === 'yes')) throw new Error('Confirm the binding before saving.');
+      binding = onboarding.confirm(view.private_metadata, record(body.team).id, body.user.id);
     } catch (error) {
       await ack({ response_action: 'errors', errors: { directory: error instanceof Error ? error.message : 'Could not save this binding.' } });
       return;
@@ -93,7 +102,7 @@ async function main(): Promise<void> {
     const user = record(payload.user).id;
     const channel = record(payload.channel).id;
     if (!authorized(config, team, user, channel)) return;
-    if (!pending || pending.binding.channel !== channel) {
+    if (!pending || pending.binding.channel !== channel || !bridge.enabled(pending.binding)) {
       await client.chat.postEphemeral({ channel: String(channel), user: String(user), text: 'This request has expired or was already answered.' });
       return;
     }
@@ -109,7 +118,7 @@ async function main(): Promise<void> {
   });
   app.view('cs:answers', async ({ ack, body, view }) => {
     const pending = bridge.interactions.lookup(view.private_metadata);
-    if (!pending || !authorized(config, record(body.team).id, body.user.id, pending.binding.channel)) {
+    if (!pending || !bridge.enabled(pending.binding) || !authorized(config, record(body.team).id, body.user.id, pending.binding.channel)) {
       await ack({ response_action: 'errors', errors: { q0: 'This request has expired or you are not authorized.' } }); return;
     }
     try {

@@ -1,5 +1,6 @@
 {
   "users": ["@earonesty"],
+  "root": "~",
   "channels": {
     "#controller": "~/work",
     "#dirtsignal": "~/work/projects/dirtsignal"

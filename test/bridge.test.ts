@@ -11,10 +11,11 @@ import { Store, type Incoming } from '../src/store.ts';
 import { Bridge } from '../src/bridge.ts';
 import { authorized, parseConfig, type Config } from '../src/config.ts';
 import { chunks } from '../src/messages.ts';
+import { Onboarding } from '../src/onboarding.ts';
 
 const fake = fileURLToPath(new URL('./fake-codex.mjs', import.meta.url));
-const config: Config = { teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: '/project' } }, stateDir: '/unused', codexBin: 'unused' };
-const incoming = (id = 'T123:C123:1.1'): Incoming => ({ id, user: 'U123', key: 'T123:C123:1.1', channel: 'C123', root: '1.1', cwd: '/project', thread: null, text: 'hello', unsupported: false });
+const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', codexBin: 'unused' };
+const incoming = (id = 'T123:C123:1.1'): Incoming => ({ id, user: 'U123', key: 'T123:C123:1.1', channel: 'C123', root: '1.1', cwd: tmpdir(), thread: null, text: 'hello', unsupported: false });
 
 async function until(predicate: () => boolean): Promise<void> {
   for (let i = 0; i < 300; i++) { if (predicate()) return; await sleep(10); }
@@ -25,7 +26,7 @@ test('configuration requires a workspace, explicit users, channel IDs, and exist
   assert.throws(() => parseConfig({}), /teamId/);
   assert.throws(() => parseConfig({ ...config, allowedUserIds: [] }), /allowedUserIds/);
   assert.throws(() => parseConfig({ ...config, channels: { '#name': { cwd: '/tmp' } } }), /Invalid channel/);
-  const valid = parseConfig({ ...config, channels: { C123: { cwd: tmpdir() } } });
+  const valid = parseConfig({ ...config, root: tmpdir(), channels: { C123: { cwd: tmpdir() } } });
   assert.equal(authorized(valid, 'T123', 'U123', 'C123'), true);
   assert.equal(authorized(valid, 'Tother', 'U123', 'C123'), false);
   assert.equal(authorized(valid, 'T123', 'Uother', 'C123'), false);
@@ -45,7 +46,7 @@ test('SQLite deduplicates inbound messages and preserves original thread cwd', t
   assert.equal(store.ingest(incoming()), false);
   store.bind(incoming().key, 'thread-native');
   store.ingest({ ...incoming('T123:C123:2.1'), cwd: '/new-default' });
-  assert.equal(store.get(incoming().key)?.cwd, '/project');
+  assert.equal(store.get(incoming().key)?.cwd, tmpdir());
   assert.equal(store.get(incoming().key)?.thread, 'thread-native');
   assert.equal(store.pending().length, 2);
 });
@@ -127,6 +128,26 @@ test('follow-ups steer an active turn and !stop interrupts it', async t => {
   bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '3.1', thread_ts: '1.1', text: '!stop' });
   await until(() => outputs.includes('Codex turn interrupted.'));
   assert.equal(codex.active.size, 0);
+});
+
+test('directory transfer interrupts active work and old threads remain disabled after rebinding', async t => {
+  const local = { ...config, channels: { C123: { cwd: tmpdir() } } };
+  const rpc = new Rpc(process.execPath, [fake]);
+  const codex = new Codex(rpc); const store = new Store(':memory:'); const outputs: string[] = [];
+  const bridge = new Bridge(local, store, codex, async (_, message) => { outputs.push(message.text); });
+  t.after(async () => { await bridge.stop(); store.close(); });
+  const onboarding = new Onboarding(local, store, async () => {}, channels => { void bridge.disableChannels(channels); });
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', text: 'hold' });
+  await until(() => codex.active.size === 1);
+  await onboarding.ask('T123', 'C999');
+  const token = store.channelSetups('T123').find(row => row.channel === 'C999')!.token;
+  const preview = onboarding.preview(token, 'T123', 'U123', tmpdir());
+  onboarding.confirm(preview.private_metadata!, 'T123', 'U123');
+  await until(() => codex.active.size === 0);
+  assert.equal(bridge.enabled(store.get('T123:C123:1.1')!), false);
+  local.channels.C123 = { cwd: tmpdir() };
+  assert.equal(bridge.enabled(store.get('T123:C123:1.1')!), false);
+  assert.ok(!outputs.includes('Codex turn interrupted.'));
 });
 
 test('non-operators, bots, edits, and other workspaces never enter the inbox', t => {
