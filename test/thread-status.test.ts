@@ -6,23 +6,26 @@ import type { Binding } from '../src/store.ts';
 
 const binding = { key: 'T:C:1.1', channel: 'C', root: '1.1', cwd: '/tmp', thread: 'thread' } as Binding;
 
-test('status survives intermediate replies and refreshes until cleared', async () => {
+test('status survives intermediate replies and refreshes until cleared', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const calls: string[] = [];
   const status = new ThreadStatus(async (_, value) => { calls.push(value); }, 15);
   try {
     status.set(binding, true);
-    await sleep(5);
+    await sleep(0);
     assert.deepEqual(calls, ['is working…']);
     status.afterMessage(binding);
-    await sleep(5);
+    await sleep(0);
     assert.equal(calls.length, 2);
-    await sleep(30);
+    t.mock.timers.tick(30);
+    await sleep(0);
     assert.ok(calls.length > 2);
     await status.clear();
     assert.equal(calls.at(-1), '');
     const count = calls.length;
     status.afterMessage(binding);
-    await sleep(30);
+    t.mock.timers.tick(30);
+    await sleep(0);
     assert.equal(calls.length, count);
   } finally { await status.clear(); }
 });

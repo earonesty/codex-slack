@@ -171,6 +171,30 @@ test('manual active work blocks scheduled edits in the same and nested folders',
   const once = f.scheduler.put({ ...f.job, id: 'once', cron: null, at: '2026-09-15T00:00:00Z' });
   f.setTime(once.nextAt!); await f.scheduler.tick();
   assert.equal(f.db.get('once')?.enabled, true); assert.equal(f.db.history('once').length, 0);
+  await f.codex.interrupt(f.store.get('T123:C123:1.1')!.thread!);
+  await until(() => f.codex.active.size === 0);
+  await f.scheduler.tick();
+  await until(() => f.db.history('once')[0]?.status === 'completed');
+  await f.scheduler.tick();
+  assert.equal(f.db.history('once').length, 1);
+  assert.equal(f.db.get('once')?.enabled, false);
+  assert.equal(f.db.get('once')?.nextAt, null);
+});
+
+test('scheduled work in sibling directories runs concurrently without a shared-prefix false conflict', async t => {
+  const f = fixture(t);
+  const first = path.join(f.dir, 'project');
+  const second = path.join(f.dir, 'project-other');
+  mkdirSync(first); mkdirSync(second);
+  const jobs = [first, second].map((cwd, i) => f.scheduler.put({ ...f.job, id: `sibling-${i}`, cwd, prompt: 'hold' }));
+  const runs = await Promise.all(jobs.map(job => f.scheduler.launch(job)));
+  assert.equal(f.db.active().length, 2);
+  assert.equal(f.codex.active.size, 2);
+  assert.notEqual(runs[0]!.thread, runs[1]!.thread);
+  for (const run of runs) await f.codex.interrupt(run.thread!);
+  await until(() => runs.every(run => f.db.run(run.id)?.status === 'interrupted'));
+  assert.equal(f.roots.length, 2);
+  assert.notEqual(f.db.run(runs[0]!.id)!.key, f.db.run(runs[1]!.id)!.key);
 });
 
 test('changed routing disables scheduled work instead of sending it to a different project', async t => {

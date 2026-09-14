@@ -27,6 +27,14 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (method === 'initialize') { send({ id, result: { userAgent: 'fake-codex' } }); continue; }
   if (!initialized) { send({ id, error: { code: -32600, message: 'Handshake missing' } }); continue; }
   if (method === 'test/hang') continue;
+  if (method === 'test/invalid-json') { process.stdout.write('not json\n'); continue; }
+  if (method === 'test/fragmented') {
+    const response = Buffer.from(JSON.stringify({ id, result: '🦊 fragmented reply' }) + '\n');
+    const split = response.indexOf(Buffer.from('🦊')) + 2;
+    process.stdout.write(response.subarray(0, split));
+    setTimeout(() => process.stdout.write(response.subarray(split)), 10);
+    continue;
+  }
   if (method === 'test/exit') { process.exit(0); }
   if (method === 'test/ask') {
     send({ id, method: 'item/tool/requestUserInput', params: { threadId: 'external' } });

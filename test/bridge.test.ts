@@ -201,3 +201,39 @@ test('ambiguous Slack failure is retained without automatic duplicate posting', 
   assert.equal(attempts, 1);
   assert.equal(store.deliveries().length, 0);
 });
+
+test('stopping one Slack thread leaves another active and later replies reuse the stopped session', async t => {
+  const rpc = new Rpc(process.execPath, [fake]);
+  const codex = new Codex(rpc); const store = new Store(':memory:');
+  const outputs: { root: string; text: string }[] = [];
+  const bridge = new Bridge(config, store, codex, async (binding, message) => {
+    outputs.push({ root: binding.root, text: message.text });
+  });
+  t.after(async () => { await bridge.stop(); store.close(); });
+  const event = { user: 'U123', channel: 'C123' };
+  bridge.ingest('T123', { ...event, ts: '1.1', text: 'hold' });
+  bridge.ingest('T123', { ...event, ts: '2.1', text: 'hold' });
+  await until(() => codex.active.size === 2);
+  const first = store.get('T123:C123:1.1')!.thread!;
+  const second = store.get('T123:C123:2.1')!.thread!;
+  bridge.ingest('T123', { ...event, ts: '3.1', thread_ts: '1.1', text: '!stop' });
+  await until(() => outputs.some(o => o.root === '1.1' && o.text === 'Codex turn interrupted.'));
+  assert.equal(codex.active.has(first), false);
+  assert.equal(codex.active.has(second), true);
+  bridge.ingest('T123', { ...event, ts: '4.1', thread_ts: '1.1', text: 'continue after stop' });
+  await until(() => outputs.some(o => o.root === '1.1' && o.text === 'Reply: continue after stop'));
+  assert.equal(store.get('T123:C123:1.1')!.thread, first);
+  assert.equal(codex.active.has(second), true);
+});
+
+test('idle stop and status commands never create a model session', async t => {
+  const store = new Store(':memory:'); const outputs: string[] = [];
+  const bridge = new Bridge(config, store, new Codex(new Rpc('/must-not-start')), async (_, message) => { outputs.push(message.text); });
+  t.after(async () => { await bridge.stop(); store.close(); });
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', text: '!stop' });
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '2.1', thread_ts: '1.1', text: '!status' });
+  await until(() => outputs.length === 2);
+  assert.equal(outputs[0], 'No active turn to interrupt.');
+  assert.match(outputs[1]!, /^No Codex session yet/);
+  assert.equal(store.get('T123:C123:1.1')!.thread, null);
+});
