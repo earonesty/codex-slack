@@ -14,6 +14,7 @@ import { Onboarding } from './onboarding.ts';
 import { ScheduleStore } from './schedule-store.ts';
 import { Scheduler } from './scheduler.ts';
 import { listenControl } from './control.ts';
+import { recoverRestart } from './restart.ts';
 import type { Server } from 'node:net';
 
 async function main(): Promise<void> {
@@ -165,9 +166,10 @@ async function main(): Promise<void> {
     for (const channel of directory.channels.filter(channel => channel.joined)) {
       await onboarding.ask(config.teamId, channel.id);
     }
-    bridge.start();
     await app.start();
     control = await listenControl(path.join(config.stateDir, 'control.sock'), value => scheduler.command(value));
+    recoverRestart(bridge);
+    bridge.start();
     scheduler.start();
     console.log(`Codex Slack listening in ${Object.keys(config.channels).length} configured channels.`);
   } catch (error) {

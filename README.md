@@ -145,7 +145,7 @@ Only configured users in the configured workspace/channels can send instructions
 
 The daemon spawns one `codex app-server` and communicates over stdio. It initializes the protocol, creates/resumes threads, starts/steers/interrupts turns, and forwards server requests. It does not start another model to interpret Slack commands.
 
-Model, reasoning effort, approval policy, sandbox, instructions, and memory settings are inherited from your effective Codex configuration. The bridge does not bypass approvals or inject its own system prompt. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**. Configure permissions in Codex itself.
+Model, reasoning effort, instructions, and memory settings are inherited from your effective Codex configuration. Scheduled runs explicitly request `sandbox: "danger-full-access"` and `approvalPolicy: "never"`, giving unattended work full filesystem and network access without approval prompts. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Ordinary Slack sessions inherit Codex permissions. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
 
 Bindings and messages are stored in `stateDir/bridge.sqlite`. SQLite also provides a separate process lease so two daemons cannot use the same state directory. Run only one instance per Slack app token, even with different state directories. The state directory is private to your OS user and contains conversation text; it is not encrypted.
 
@@ -182,6 +182,48 @@ journalctl --user -u codex-slack -f
 ```
 
 The service restarts on crashes and stops its whole process group on shutdown. User services normally require a logged-in user; use your system's lingering configuration if you want it to run after logout. Stop the foreground instance before starting the service.
+
+### Restarting from inside a Codex Slack session
+
+The session's command executor is a descendant of the bridge service. A direct
+`systemctl --user restart codex-slack.service` kills that executor before it returns,
+so the tool can report `aborted` even when systemd successfully restarted the bridge.
+This is not an approval rejection. Inspect service start time and health before retrying.
+
+Build and test the intended changes, then use the session-aware helper:
+
+```sh
+node bin/codex-slack-restart.mjs
+node bin/codex-slack-restart.mjs status
+```
+
+The helper defaults to `CODEX_THREAD_ID`; use `--session <Codex thread ID>` when
+needed. `--state-dir` and `CODEX_SLACK_STATE_DIR` select a nondefault state directory.
+It requires a saved Slack session with an owner and a healthy scheduler with no active
+or uncertain scheduled runs. Restarting also interrupts other interactive work in this daemon.
+
+Before requesting a restart, it saves the session ID, pinned Slack binding, owner,
+and old systemd invocation ID in the bridge's private `bridge.sqlite` database.
+It then installs a five-second user systemd timer outside the bridge's control group,
+running `contrib/restart-and-check.mjs`. Once a different daemon invocation has connected
+to Codex and Slack and opened its control socket, startup atomically queues one lifecycle
+notification into that session's durable inbox. The notification asks Codex to confirm
+readiness without repeating the restart or interrupted work. Existing message delivery
+rules prevent replay when a Codex acknowledgement is uncertain. The destination and
+owner are revalidated; revoked bindings do not receive the notification.
+
+`status` reads the latest handoff: `pending` awaits recovery, `queued` means inserted
+into the inbox (not proof of a delivered reply), and `failed` records a routing failure.
+Repeated requests while one is pending do not schedule another restart. A late recovery
+is explicitly described as delayed rather than evidence of continuous availability.
+The independent helper writes `scheduling-restart.log` in the state directory, including
+failures if the new daemon never becomes healthy. No success notification is sent if
+startup fails before readiness.
+
+If timer creation has an uncertain acknowledgement, leave the handoff pending and inspect
+`systemctl --user status codex-slack-restart-<handoff-id>.timer`, the helper log, and the
+service journal before taking further action. A later successful service start consumes
+the pending handoff. Do not treat the absence of a reply as authorization to replay work.
 
 ## Development
 

@@ -191,7 +191,7 @@ export class Scheduler {
       }
       this.valid(job);
       if (this.stopped) throw new Error('Scheduler stopped before session creation');
-      run.thread = await this.bridge.codex.create(job.cwd);
+      run.thread = await this.bridge.codex.create(job.cwd, { unattended: true });
       if (run.key) this.bridge.store.bind(run.key, run.thread);
       this.db.update({ ...run, status: 'running' });
       this.valid(job);

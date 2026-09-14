@@ -107,6 +107,8 @@ test('top-level messages create sessions, replies reuse them, and duplicate even
   assert.equal(bridge.ingest('T123', event), false);
   await until(() => outputs.some(o => o.text === 'Reply: first'));
   const thread = store.get('T123:C123:1.1')?.thread;
+  const started = await rpc.request('thread/read', { threadId: thread }) as { thread: { startParams: unknown } };
+  assert.deepEqual(started.thread.startParams, { cwd: tmpdir() });
   bridge.ingest('T123', { ...event, ts: '2.1', thread_ts: '1.1', text: 'second' });
   bridge.ingest('T123', { ...event, ts: '3.1', text: 'separate' });
   await until(() => outputs.some(o => o.text === 'Reply: second') && outputs.some(o => o.text === 'Reply: separate'));

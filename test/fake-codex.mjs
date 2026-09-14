@@ -34,7 +34,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     continue;
   }
   if (method === 'thread/start') {
-    const thread = { id: `thread-${++sequence}`, cwd: params.cwd, status: { type: 'idle' }, turns: [] };
+    const thread = { id: `thread-${++sequence}`, cwd: params.cwd, startParams: params, status: { type: 'idle' }, turns: [] };
     threads.set(thread.id, thread);
     send({ id, result: { thread } }); continue;
   }

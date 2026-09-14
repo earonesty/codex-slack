@@ -5,6 +5,8 @@ export type Binding = { key: string; channel: string; root: string; cwd: string;
 export type Incoming = Binding & { id: string; user: string; text: string; unsupported: boolean };
 export type Delivery = { id: string; key: string; payload: string };
 export type ChannelSetup = { team: string; channel: string; token: string; cwd: string | null; prompted: number };
+export type Restart = { id: string; thread: string; key: string; user: string; invocation: string;
+  requested: number; status: 'pending' | 'queued' | 'failed'; detail: string | null };
 
 /** Only bridge-owned state lives here. Never reads or writes Codex's files. */
 export class Store {
@@ -34,9 +36,52 @@ export class Store {
         team TEXT NOT NULL, channel TEXT NOT NULL, cwd TEXT, PRIMARY KEY(team,channel)
       );
       CREATE TABLE IF NOT EXISTS disabled_sessions (key TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS restarts (
+        id TEXT PRIMARY KEY, thread TEXT NOT NULL, key TEXT NOT NULL, user TEXT NOT NULL,
+        invocation TEXT NOT NULL, requested INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending', detail TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS one_pending_restart ON restarts(status) WHERE status='pending';
     `);
   }
   close(): void { this.db.close(); }
+  pendingRestart(): Restart | undefined {
+    return this.db.prepare("SELECT * FROM restarts WHERE status='pending'").get() as Restart | undefined;
+  }
+  latestRestart(): Restart | undefined {
+    return this.db.prepare('SELECT * FROM restarts ORDER BY rowid DESC LIMIT 1').get() as Restart | undefined;
+  }
+  prepareRestart(thread: string, invocation: string, now = Date.now()): Restart {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const pending = this.pendingRestart();
+      if (pending) throw new Error(`Restart ${pending.id} is already pending; inspect restart status before retrying.`);
+      const binding = this.byThread(thread);
+      const user = binding && this.owner(binding.key);
+      if (!binding || !user || this.disabled(binding.key)) throw new Error('Restart requires an existing, enabled Slack session with a saved owner.');
+      const id = randomUUID();
+      this.db.prepare('INSERT INTO restarts(id,thread,key,user,invocation,requested) VALUES(?,?,?,?,?,?)')
+        .run(id, thread, binding.key, user, invocation, now);
+      this.db.exec('COMMIT');
+      return this.pendingRestart()!;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  failRestart(id: string, detail: string): void {
+    this.db.prepare("UPDATE restarts SET status='failed',detail=? WHERE id=? AND status='pending'").run(detail, id);
+  }
+  queueRestartNotice(id: string, text: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const restart = this.pendingRestart();
+      if (restart?.id === id) {
+        // The inbox insertion and handoff acknowledgement commit together. Reboots cannot duplicate it.
+        this.db.prepare('INSERT OR IGNORE INTO inbox(id,key,user,text,unsupported) VALUES(?,?,?,?,0)')
+          .run(`restart:${id}`, restart.key, restart.user, text);
+        this.db.prepare("UPDATE restarts SET status='queued',detail=? WHERE id=?").run(text, id);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   overrides(team: string): { channel: string; cwd: string | null }[] {
     return this.db.prepare('SELECT channel,cwd FROM channel_overrides WHERE team=?').all(team) as { channel: string; cwd: string | null }[];
   }

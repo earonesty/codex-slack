@@ -74,6 +74,8 @@ test('scheduled output lands in a new bound thread and Slack replies resume that
   await f.scheduler.tick();
   await until(() => f.db.history()[0]?.status === 'completed');
   const run = f.db.history()[0]!;
+  const started = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
+  assert.deepEqual(started.startParams, { cwd: f.dir, sandbox: 'danger-full-access', approvalPolicy: 'never' });
   assert.equal(f.roots.length, 1);
   assert.equal(f.roots[0]?.channel, 'C123');
   assert.ok(run.output.includes('Reply: Check the logs'));

@@ -12,10 +12,13 @@ export class Codex {
       if (method === 'turn/completed' && this.active.get(thread) === record(params.turn).id) this.active.delete(thread);
     });
   }
-  async create(cwd: string): Promise<string> {
+  async create(cwd: string, options: { unattended?: boolean } = {}): Promise<string> {
     await this.rpc.start();
-    // Omit model, instructions, memory, sandbox and approval overrides: inherit Codex.
-    const result = record(await this.rpc.request('thread/start', { cwd }));
+    // Scheduled work needs filesystem/network access without an approval round trip.
+    // Other settings, and permissions for ordinary Slack sessions, inherit Codex.
+    const result = record(await this.rpc.request('thread/start', { cwd,
+      ...(options.unattended ? { sandbox: 'danger-full-access', approvalPolicy: 'never' } : {}),
+    }));
     const id = record(result.thread).id;
     if (typeof id !== 'string') throw new Error('Codex returned no thread ID');
     this.loaded.add(id);
