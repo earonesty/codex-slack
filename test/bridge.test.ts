@@ -1,3 +1,5 @@
+import { AttachmentError } from '../src/attachments.ts';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -171,13 +173,13 @@ test('non-operators, bots, edits, and other workspaces never enter the inbox', t
   assert.equal(store.pending().length, 0);
 });
 
-test('attachments are rejected visibly without sending a partial prompt', async t => {
+test('unconfigured attachment handling fails visibly without sending a partial prompt', async t => {
   const rpc = new Rpc('unused'); const store = new Store(':memory:'); const outputs: string[] = [];
   const bridge = new Bridge(config, store, new Codex(rpc), async (_, message) => { outputs.push(message.text); });
   t.after(async () => { await bridge.stop(); store.close(); });
   bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', text: 'edit this', files: [{ id: 'F123' }] });
   await until(() => outputs.length > 0);
-  assert.match(outputs[0]!, /Attachments are not supported/);
+  assert.match(outputs[0]!, /Attachment downloads are not configured/);
   assert.equal(store.get('T123:C123:1.1')?.thread, null);
 });
 
@@ -200,6 +202,66 @@ test('ambiguous Slack failure is retained without automatic duplicate posting', 
   await bridge.flush(); await bridge.flush();
   assert.equal(attempts, 1);
   assert.equal(store.deliveries().length, 0);
+});
+
+
+test('attachment-only messages, captions and active-turn steering preserve every input', async t => {
+  const rpc = new Rpc(process.execPath, [fake]); const codex = new Codex(rpc);
+  const store = new Store(':memory:'); const outputs: string[] = []; let downloads = 0;
+  const files = [{ name: 'screen.png', path: '/tmp/screen.png', image: true }, { name: 'data.csv', path: '/tmp/data.csv', image: false }];
+  const bridge = new Bridge(config, store, codex, async (_, message) => { outputs.push(message.text); }, undefined, async input => {
+    assert.deepEqual(input, [{ id: 'F123' }, { id: 'F456' }]); downloads++; return files;
+  });
+  t.after(async () => { await bridge.stop(); store.close(); });
+  const event = { user: 'U123', channel: 'C123', ts: '1.1', subtype: 'file_share', files: [{ id: 'F123' }, { id: 'F456' }] };
+  assert.equal(bridge.ingest('T123', event), true);
+  assert.equal(bridge.ingest('T123', event), false);
+  await until(() => outputs.some(text => text.startsWith('Reply:')));
+  assert.equal(downloads, 1);
+  const threadId = store.get('T123:C123:1.1')!.thread!;
+  let state: any = await rpc.request('thread/read', { threadId });
+  const input = state.thread.turns[0].input;
+  assert.match(input[0].text, /Please inspect the attached files/);
+  assert.match(input[0].text, /data.csv/);
+  assert.deepEqual(input[1], { type: 'localImage', path: '/tmp/screen.png' });
+  bridge.ingest('T123', { ...event, files: [], ts: '2.1', thread_ts: '1.1', text: 'hold' });
+  await until(() => codex.active.size === 1);
+  bridge.ingest('T123', { ...event, ts: '3.1', thread_ts: '1.1', text: 'compare these' });
+  await until(() => outputs.some(text => text.startsWith('Steered: compare these')));
+  state = await rpc.request('thread/read', { threadId });
+  assert.match(state.thread.steerInput[0].text, /^compare these/);
+  assert.match(state.thread.steerInput[0].text, /data.csv/);
+  assert.deepEqual(state.thread.steerInput[1], input[1]);
+  assert.equal(downloads, 2);
+});
+
+test('failed attachment retrieval never sends the caption or starts a session', async t => {
+  const rpc = new Rpc('unused'); const store = new Store(':memory:'); const outputs: string[] = [];
+  const bridge = new Bridge(config, store, new Codex(rpc), async (_, message) => { outputs.push(message.text); }, undefined,
+    async () => { throw new AttachmentError('Download failed.'); });
+  t.after(async () => { await bridge.stop(); store.close(); });
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', text: 'act on this', files: [{ id: 'F123' }] });
+  await until(() => outputs.length > 0);
+  assert.match(outputs[0]!, /Download failed.*not sent to Codex/);
+  assert.equal(store.get('T123:C123:1.1')!.thread, null);
+  assert.equal(store.pending().length, 0);
+});
+
+test('legacy inbox migration keeps attachment metadata durable across reopening and deduplication', t => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'slack-migrate-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const filename = path.join(dir, 'bridge.sqlite');
+  const legacy = new DatabaseSync(filename);
+  legacy.exec("CREATE TABLE inbox (id TEXT PRIMARY KEY, key TEXT NOT NULL, user TEXT NOT NULL, text TEXT NOT NULL, unsupported INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending')");
+  legacy.close();
+  let store = new Store(filename);
+  store.ingest({ ...incoming(), files: [{ id: 'F123' }] });
+  store.close(); store = new Store(filename);
+  t.after(() => store.close());
+  assert.equal(store.ingest({ ...incoming(), files: [{ id: 'F999' }] }), false);
+  assert.deepEqual(store.pending()[0]!.files, [{ id: 'F123' }]);
+  store.ingest({ ...incoming('legacy'), unsupported: true });
+  assert.deepEqual(store.pending()[1]!.files, []);
 });
 
 test('stopping one Slack thread leaves another active and later replies reuse the stopped session', async t => {

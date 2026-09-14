@@ -53,7 +53,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     const text = params.input[0].text;
     const task = text.split('\n\n[Scheduled execution:')[0];
     if (task === 'reject') { send({ id, error: { code: -32602, message: 'test rejection' } }); continue; }
-    const turn = { id: `turn-${++sequence}`, status: 'inProgress', items: [] };
+    const turn = { id: `turn-${++sequence}`, status: 'inProgress', items: [], input: params.input };
     thread.turns.push(turn); thread.status = { type: 'active' };
     notify('turn/started', { threadId: thread.id, turn });
     send({ id, result: { turn } });
@@ -89,6 +89,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     notify('turn/completed', { threadId: thread.id, turn }); continue;
   }
   if (method === 'turn/steer') {
+    thread.steerInput = params.input;
     const turn = thread.turns.at(-1);
     if (turn?.id !== params.expectedTurnId || turn.status !== 'inProgress') {
       send({ id, error: { code: -32602, message: 'No active turn' } }); continue;

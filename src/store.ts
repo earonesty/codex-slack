@@ -1,8 +1,9 @@
+import type { Attachment } from './attachments.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 
 export type Binding = { key: string; channel: string; root: string; cwd: string; thread: string | null };
-export type Incoming = Binding & { id: string; user: string; text: string; unsupported: boolean };
+export type Incoming = Binding & { id: string; user: string; text: string; unsupported: boolean; files?: Attachment[] };
 export type Delivery = { id: string; key: string; payload: string };
 export type ChannelSetup = { team: string; channel: string; token: string; cwd: string | null; prompted: number };
 export type Restart = { id: string; thread: string; key: string; user: string; invocation: string;
@@ -43,6 +44,9 @@ export class Store {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS one_pending_restart ON restarts(status) WHERE status='pending';
     `);
+    if (!this.db.prepare('PRAGMA table_info(inbox)').all().some(column => column.name === 'files')) {
+      this.db.exec("ALTER TABLE inbox ADD COLUMN files TEXT NOT NULL DEFAULT '[]'");
+    }
   }
   close(): void { this.db.close(); }
   pendingRestart(): Restart | undefined {
@@ -143,15 +147,15 @@ export class Store {
     try {
       this.db.prepare('INSERT OR IGNORE INTO bindings(key,channel,root,cwd) VALUES(?,?,?,?)')
         .run(message.key, message.channel, message.root, message.cwd);
-      const result = this.db.prepare('INSERT OR IGNORE INTO inbox(id,key,user,text,unsupported) VALUES(?,?,?,?,?)')
-        .run(message.id, message.key, message.user, message.text, Number(message.unsupported));
+      const result = this.db.prepare('INSERT OR IGNORE INTO inbox(id,key,user,text,unsupported,files) VALUES(?,?,?,?,?,?)')
+        .run(message.id, message.key, message.user, message.text, Number(message.unsupported), JSON.stringify(message.files ?? []));
       this.db.exec('COMMIT');
       return result.changes > 0;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   pending(): Incoming[] {
-    return this.db.prepare(`SELECT b.*, i.id, i.user, i.text, i.unsupported FROM inbox i
-      JOIN bindings b ON b.key=i.key WHERE i.status='pending' ORDER BY i.rowid`).all() as unknown as Incoming[];
+    return this.db.prepare(`SELECT b.*, i.id, i.user, i.text, i.unsupported, i.files FROM inbox i
+      JOIN bindings b ON b.key=i.key WHERE i.status='pending' ORDER BY i.rowid`).all().map(row => ({ ...row, files: JSON.parse(String(row.files)) })) as unknown as Incoming[];
   }
   mark(id: string, status: 'dispatching' | 'done' | 'uncertain' | 'failed'): void {
     this.db.prepare('UPDATE inbox SET status=? WHERE id=?').run(status, id);

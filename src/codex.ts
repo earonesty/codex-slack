@@ -1,3 +1,4 @@
+import type { LocalAttachment } from './attachments.ts';
 import { record } from './config.ts';
 import { Rpc } from './rpc.ts';
 
@@ -35,10 +36,15 @@ export class Codex {
     }
     this.loaded.add(thread);
   }
-  async input(thread: string, text: string): Promise<void> {
+  async input(thread: string, text: string, files: LocalAttachment[] = []): Promise<void> {
     await this.resume(thread);
     const turn = this.active.get(thread);
-    const input = [{ type: 'text', text }];
+    const descriptions = files.length ? '\n\nAttached files (local copies; read them as needed):\n'
+      + files.map(file => `- ${JSON.stringify(file.name)}: ${JSON.stringify(file.path)}`).join('\n') : '';
+    const input = [
+      { type: 'text', text: (text.trim() ? text : 'Please inspect the attached files.') + descriptions },
+      ...files.filter(file => file.image).map(file => ({ type: 'localImage', path: file.path })),
+    ];
     // No retry on an uncertain acknowledgement: starting another turn could duplicate work.
     if (turn) await this.rpc.request('turn/steer', { threadId: thread, expectedTurnId: turn, input });
     else await this.rpc.request('turn/start', { threadId: thread, input });

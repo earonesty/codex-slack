@@ -1,3 +1,4 @@
+import { Attachments } from './attachments.ts';
 import { mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -45,12 +46,13 @@ async function main(): Promise<void> {
   const store = new Store(path.join(config.stateDir, 'bridge.sqlite'));
   const app = new App({ token, appToken, socketMode: true,
     clientOptions: { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 10_000 } });
+  const attachments = new Attachments(path.join(config.stateDir, 'attachments'), token, id => app.client.files.info({ file: id }));
   const bridge = new Bridge(config, store, new Codex(rpc), async (binding, message) => {
     await app.client.chat.postMessage({ channel: binding.channel, thread_ts: binding.root,
       text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false, parse: 'none' });
   }, async (binding, status) => {
     await app.client.assistant.threads.setStatus({ channel_id: binding.channel, thread_ts: binding.root, status });
-  });
+  }, files => attachments.prepare(files));
   const onboarding = new Onboarding(config, store, async (channel, message) => {
     await app.client.chat.postMessage({ channel, text: message.text, blocks: message.blocks,
       unfurl_links: false, unfurl_media: false, parse: 'none' });

@@ -33,7 +33,7 @@ cp .env.example .env
 4. Run **`npm run setup`**. It discovers your workspace, lets you choose yourself, and writes `config.json`. Channel selection is optional: skip it to choose directories in Slack instead. All folders must already exist. No Slack IDs to find or copy.
 5. Run `npm run doctor` to check Slack access, channel membership, folders, and Codex login without starting a model turn. Then `npm start`.
 
-Already installed an earlier version? Apply the updated manifest under **Slack → App Manifest**, then **reinstall the app** under OAuth & Permissions to grant `users:read`, `channels:read`, and `groups:read`. These let setup resolve readable names; no email permission is requested. Keep your existing `.env`.
+Already installed an earlier version? Apply the updated manifest under **Slack → App Manifest**, then **reinstall the app** under OAuth & Permissions to grant the scopes listed below, including `files:read` for attachments and `channels:join` for joining public channels. The read scopes let setup resolve readable names; no email permission is requested. Keep your existing `.env`.
 
 ### Slack app manifest — paste into Slack
 
@@ -43,7 +43,7 @@ In Slack's **Create New App → From a manifest** flow, choose your workspace an
 {
   "display_information": { "name": "Codex Slack", "description": "Direct access to local Codex sessions", "background_color": "#202123" },
   "features": { "bot_user": { "display_name": "Codex", "always_online": false } },
-  "oauth_config": { "scopes": { "bot": ["chat:write", "channels:history", "groups:history", "users:read", "channels:read", "groups:read"] } },
+  "oauth_config": { "scopes": { "bot": ["files:read", "channels:history", "channels:join", "channels:read", "chat:write", "groups:history", "groups:read", "users:read"] } },
   "settings": {
     "event_subscriptions": { "bot_events": ["message.channels", "message.groups", "member_joined_channel"] },
     "interactivity": { "is_enabled": true },
@@ -94,6 +94,14 @@ Write a new message in a configured channel to start work. Reply in that message
 | `!status` | Show the session ID, directory, status, and latest final answer |
 | `!stop` | Interrupt the active turn |
 | `!help` | Show commands |
+
+### Attachments
+
+Upload files with a message or send files alone, in either a new conversation or a thread reply. PNG, JPEG, GIF, and WebP images are passed as native Codex image inputs. Documents, PDFs, spreadsheets, code, and other files are downloaded locally and included as paths for Codex to inspect with its tools. The accompanying text stays part of the same instruction, including when steering an active turn.
+
+Existing installations need the **files:read** bot scope: apply the updated `slack-manifest.json` in Slack → App Manifest, reinstall under OAuth & Permissions, and restart the built daemon. Missing access is reported without sending a partial prompt. Messages rejected by an older bridge must be resent.
+
+Downloads are private (0600 files in per-message 0700 directories) under `stateDir/attachments`. They remain available for session follow-ups and restarts. They are not automatically pruned; archive or remove them only when their sessions no longer need them. The bot token is used only to retrieve files from Slack and is never passed to Codex.
 
 ## Scheduled Codex work
 
@@ -164,7 +172,7 @@ This is not an exactly-once delivery guarantee. Slack Bolt can acknowledge an ev
 
 Version 0.1 is intentionally narrow:
 
-- Text only. Attachment messages are rejected visibly, including any accompanying text, so Codex never acts on an incomplete instruction.
+- Up to 10 uploaded files per message, 25 MiB each and 50 MiB total. Remote file links (such as cloud document shares) must be uploaded as actual files. If any attachment fails, the whole prompt is held back with a visible error.
 - MCP elicitation forms/URL confirmations are declined visibly. Native Codex `requestUserInput` questions are supported. Secret question fields and oversized approval forms are rejected rather than truncated or silently approved.
 - Approval buttons offer one-time decisions, not persistent rule changes. Permission grants last for the current turn. File approval cards include the proposed changes; if that event is missing, only negative decisions are offered.
 - No attachment to an independently running terminal session, remote app-server transport, slash commands, or team orchestration.
