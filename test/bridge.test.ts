@@ -119,15 +119,22 @@ test('top-level messages create sessions, replies reuse them, and duplicate even
 test('follow-ups steer an active turn and !stop interrupts it', async t => {
   const rpc = new Rpc(process.execPath, [fake]);
   const codex = new Codex(rpc); const store = new Store(':memory:'); const outputs: string[] = [];
-  const bridge = new Bridge(config, store, codex, async (_, message) => { outputs.push(message.text); });
+  const statuses: string[] = [];
+  const bridge = new Bridge(config, store, codex, async (_, message) => { outputs.push(message.text); },
+    async (_, status) => { statuses.push(status); });
   t.after(async () => { await bridge.stop(); store.close(); });
   bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', text: 'hold' });
   await until(() => codex.active.size === 1);
+  await until(() => statuses.includes('is working…'));
+  const beforeReply = statuses.length;
   bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '2.1', thread_ts: '1.1', text: 'change direction' });
   await until(() => outputs.includes('Steered: change direction'));
+  await until(() => statuses.length > beforeReply);
+  assert.equal(statuses.at(-1), 'is working…');
   bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '3.1', thread_ts: '1.1', text: '!stop' });
   await until(() => outputs.includes('Codex turn interrupted.'));
   assert.equal(codex.active.size, 0);
+  await until(() => statuses.at(-1) === '');
 });
 
 test('directory transfer interrupts active work and old threads remain disabled after rebinding', async t => {

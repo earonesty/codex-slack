@@ -6,7 +6,9 @@
   "type": "module",
   "license": "MIT",
   "repository": "github:earonesty/codex-slack",
-  "engines": { "node": ">=24.14.0" },
+  "engines": {
+    "node": ">=24.14.0"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
@@ -14,8 +16,17 @@
     "start": "node --env-file-if-exists=.env dist/main.js",
     "doctor": "node --env-file-if-exists=.env dist/main.js --check",
     "setup": "node --env-file-if-exists=.env dist/main.js --setup",
-    "discover": "node --env-file-if-exists=.env dist/main.js --discover"
+    "discover": "node --env-file-if-exists=.env dist/main.js --discover",
+    "schedule": "node bin/codex-slack-schedule.mjs"
   },
-  "dependencies": { "@slack/bolt": "^5.1.0", "@slack/web-api": "^8.1.1" },
-  "devDependencies": { "@slack/types": "^3.1.0", "@types/node": "^24.0.0", "typescript": "^7.0.2" }
+  "dependencies": {
+    "@slack/bolt": "^5.1.0",
+    "@slack/web-api": "^8.1.1",
+    "cron-parser": "^5.10.1"
+  },
+  "devDependencies": {
+    "@slack/types": "^3.1.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2"
+  }
 }

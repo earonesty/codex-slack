@@ -11,6 +11,10 @@ import { Codex } from './codex.ts';
 import { Store } from './store.ts';
 import { Bridge } from './bridge.ts';
 import { Onboarding } from './onboarding.ts';
+import { ScheduleStore } from './schedule-store.ts';
+import { Scheduler } from './scheduler.ts';
+import { listenControl } from './control.ts';
+import type { Server } from 'node:net';
 
 async function main(): Promise<void> {
   process.umask(0o077);
@@ -43,11 +47,22 @@ async function main(): Promise<void> {
   const bridge = new Bridge(config, store, new Codex(rpc), async (binding, message) => {
     await app.client.chat.postMessage({ channel: binding.channel, thread_ts: binding.root,
       text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false, parse: 'none' });
+  }, async (binding, status) => {
+    await app.client.assistant.threads.setStatus({ channel_id: binding.channel, thread_ts: binding.root, status });
   });
   const onboarding = new Onboarding(config, store, async (channel, message) => {
     await app.client.chat.postMessage({ channel, text: message.text, blocks: message.blocks,
       unfurl_links: false, unfurl_media: false, parse: 'none' });
   }, channels => { void bridge.disableChannels(channels); });
+  const scheduleStore = new ScheduleStore(path.join(config.stateDir, 'schedules.sqlite'));
+  const scheduler = new Scheduler(bridge, scheduleStore, async (channel, text) => {
+    const result = await app.client.chat.postMessage({ channel, text,
+      blocks: [{ type: 'section', text: { type: 'plain_text', text } }],
+      unfurl_links: false, unfurl_media: false, parse: 'none' });
+    if (!result.ts) throw new Error('Slack returned no message timestamp');
+    return result.ts;
+  });
+  let control: Server | undefined;
   app.event('member_joined_channel', async ({ body, event, context }) => {
     await onboarding.joined(record(body).team_id, event, directory.botUserId ?? context.botUserId ?? '');
   });
@@ -134,6 +149,8 @@ async function main(): Promise<void> {
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    scheduler.stop();
+    control?.close();
     const timeout = setTimeout(() => process.exit(0), 12_000);
     timeout.unref();
     await bridge.stop();
@@ -150,9 +167,12 @@ async function main(): Promise<void> {
     }
     bridge.start();
     await app.start();
+    control = await listenControl(path.join(config.stateDir, 'control.sock'), value => scheduler.command(value));
+    scheduler.start();
     console.log(`Codex Slack listening in ${Object.keys(config.channels).length} configured channels.`);
   } catch (error) {
-    rpc.close(); store.close(); lease.close();
+    scheduler.stop(); control?.close();
+    rpc.close(); scheduleStore.close(); store.close(); lease.close();
     await app.stop().catch(() => {});
     throw error;
   }

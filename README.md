@@ -6,6 +6,7 @@ A small, self-hosted Slack bridge to **native Codex app-server sessions**.
 - **Slack thread = Codex session.** A top-level message creates a session. Replies continue it, or steer its active turn.
 - Codex's completed assistant messages (including progress) appear in the same Slack thread.
 - Approvals have buttons. Codex questions have answer forms. `!stop` interrupts a turn; `!status` shows the session and latest answer.
+- Slack shows “Codex is working…” during a turn, including between progress replies. The indicator refreshes every minute and clears on completion, interruption, disconnect, or shutdown. It uses the existing `chat:write` scope; no app reinstall is needed. Status API failures are logged without blocking replies.
 
 No routing model, terminal scraping, private SDK imports, or edits to Codex's session files. The bridge uses [Codex's public app-server protocol](https://developers.openai.com/codex/app-server), Slack Bolt, and Node's built-in SQLite. Codex manages its own history, model, skills, instructions, permissions, and memories.
 
@@ -93,6 +94,47 @@ Write a new message in a configured channel to start work. Reply in that message
 | `!status` | Show the session ID, directory, status, and latest final answer |
 | `!stop` | Interrupt the active turn |
 | `!help` | Show commands |
+
+## Scheduled Codex work
+
+The daemon includes a persistent timer using five-field cron expressions and IANA timezones, plus one-shot timestamps. A local command creates tasks without starting a model or posting a Slack message. When due, each task starts a native session in its project directory. By default, a fresh Slack thread is created only when there is a result, error, question, or approval to show. Output, questions, approvals, and subsequent replies use the existing bridge.
+
+After `npm run build`, use `node bin/codex-slack-schedule.mjs --help` (or `npm run schedule -- --help`). Install `skills/schedule-slack-task` in your personal Codex skills directory to make natural-language scheduling discoverable. On Erik's machine the installed command is `~/.local/bin/codex-slack-schedule`.
+
+Save a task JSON file:
+
+```json
+{
+  "id": "weekly-log-check",
+  "name": "Weekly log check",
+  "cwd": "/absolute/project/path",
+  "cron": "0 9 * * 1",
+  "timezone": "America/Los_Angeles",
+  "channel": "auto",
+  "prompt": "Check the past week's logs. Fix clear bugs, verify, commit and deploy the fixes. Ask me about anything unclear. Summarize findings and results."
+}
+```
+
+```sh
+node bin/codex-slack-schedule.mjs status
+node bin/codex-slack-schedule.mjs put --file /path/to/task.json
+node bin/codex-slack-schedule.mjs get weekly-log-check
+node bin/codex-slack-schedule.mjs history weekly-log-check
+```
+
+Use `at` with an ISO timestamp including an offset or `Z` instead of `cron` for a one-shot task. `put` creates or replaces the full definition by stable ID. Use `pause`, `resume`, and `remove` to manage future occurrences; `run <id>` explicitly starts an extra occurrence immediately. Pause/remove do not interrupt active work. `verbosity` defaults to `"quiet"`, including existing tasks without this field. Quiet runs do not post starts or progress. A successful final answer containing only `[SILENT]` (ignoring surrounding whitespace), or an empty answer, creates no Slack messages. Other final results, failures, interruptions, questions, and approvals remain visible; human replies in an existing run thread behave normally. Codex is instructed to use `[SILENT]` only when nothing changed, no action was taken, and no error or judgment needs attention. This is an explicit marker, not a guess based on words such as “nothing pending.”
+
+Set `"verbosity":"verbose"` in the task JSON to include run starts, progress, and no-op answers. `list`/`get` show the setting, and `history` retains every run and final answer even when nothing was posted to Slack. Read `get <id>` and save the complete definition with `put` to change verbosity; this does not run the task or move its next occurrence.
+
+The saved prompt defines the user's authorized task; scheduling does not override Codex's permissions or project instructions.
+
+`channel:auto` chooses the closest linked directory, preferring an exact match. The chosen destination is pinned. Changed ownership disables the schedule on its next attempt until the definition is updated. `channel:null`, or no matching linked directory, saves final output locally in `history` without sending to Slack. Interactive local-only work requires inspecting the saved session locally.
+
+Schedules and run history live in `schedules.sqlite` under the existing private state directory. The CLI uses `control.sock` (mode 0600); it does not need Slack credentials. The timer checks every five seconds and requires the daemon/machine to be running. After downtime, each overdue task runs once rather than replaying all missed intervals. Active or uncertain work in the same or nested directory blocks scheduled launches: recurring occurrences are skipped and one-shot tasks wait. Work in separate directories can proceed independently.
+
+Interrupted dispatch is recorded as uncertain and is never automatically replayed. Inspect the saved session, Slack thread, and any changes before using `resolve <run-id> --note "what was verified"` to release that block. `history` returns the latest 30 runs with final output, session IDs, and failures. Existing outbox handling retains uncertain Slack deliveries without blindly duplicating them.
+
+Use `--state-dir` or `CODEX_SLACK_STATE_DIR` when the daemon uses a nondefault state directory. No crontab changes or daemon restart are needed to manage tasks.
 | `!bind` | Show the directory picker in an unbound channel |
 
 Commands must be the entire message. Prefix another character if you want to discuss a literal command. Questions and approvals use explicit controls; ordinary replies are always prompts. Closing an answer modal leaves the question pending; use its Cancel button to dismiss it.
@@ -125,7 +167,7 @@ Version 0.1 is intentionally narrow:
 - Text only. Attachment messages are rejected visibly, including any accompanying text, so Codex never acts on an incomplete instruction.
 - MCP elicitation forms/URL confirmations are declined visibly. Native Codex `requestUserInput` questions are supported. Secret question fields and oversized approval forms are rejected rather than truncated or silently approved.
 - Approval buttons offer one-time decisions, not persistent rule changes. Permission grants last for the current turn. File approval cards include the proposed changes; if that event is missing, only negative decisions are offered.
-- No attachment to an independently running terminal session, remote app-server transport, slash commands, scheduling, or team orchestration.
+- No attachment to an independently running terminal session, remote app-server transport, slash commands, or team orchestration.
 - Outputs are forwarded when each assistant message completes, not token by token. Standard model-generated Markdown is currently displayed as plain text to avoid unintended Slack mentions.
 - No scheduled database pruning. Remove or archive the private state directory only when you no longer need its bindings and delivery history.
 

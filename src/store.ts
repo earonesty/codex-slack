@@ -86,6 +86,13 @@ export class Store {
   bind(key: string, thread: string): void {
     this.db.prepare('UPDATE bindings SET thread=? WHERE key=?').run(thread, key);
   }
+  addBinding(binding: Binding): void {
+    this.db.prepare('INSERT INTO bindings(key,channel,root,cwd,thread) VALUES(?,?,?,?,?)')
+      .run(binding.key, binding.channel, binding.root, binding.cwd, binding.thread);
+  }
+  owner(key: string): string | undefined {
+    return this.db.prepare('SELECT user FROM inbox WHERE key=? ORDER BY rowid LIMIT 1').get(key)?.user as string | undefined;
+  }
   ingest(message: Incoming): boolean {
     this.db.exec('BEGIN IMMEDIATE');
     try {

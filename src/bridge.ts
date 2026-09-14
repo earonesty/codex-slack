@@ -5,34 +5,61 @@ import { Interactions } from './interactions.ts';
 import { chunks, textMessage, type Message } from './messages.ts';
 import { RpcError, type ServerRequest } from './rpc.ts';
 import { Store, type Binding, type Incoming } from './store.ts';
+import { ThreadStatus } from './thread-status.ts';
 
 export class Bridge {
   readonly interactions: Interactions;
+  scheduledEvents?: {
+    notification(method: string, params: Record<string, unknown>): Promise<boolean>;
+    request(request: ServerRequest): Promise<void>;
+  };
+  private events = new Map<string, Promise<void>>();
+  private event(thread: string, action: () => Promise<void>): void {
+    const pending = (this.events.get(thread) ?? Promise.resolve()).then(action)
+      .catch(() => console.error('Could not process a Codex event'));
+    this.events.set(thread, pending);
+    void pending.finally(() => { if (this.events.get(thread) === pending) this.events.delete(thread); });
+  }
   private queues = new Map<string, Promise<void>>();
   private scheduled = new Set<string>();
   private outputRunning = false;
   private stopped = false;
   private running = new Set<string>();
+  private status: ThreadStatus;
   constructor(readonly config: Config, readonly store: Store, readonly codex: Codex,
-    private post: (binding: Binding, message: Message) => Promise<void>) {
+    private post: (binding: Binding, message: Message) => Promise<void>,
+    setStatus: (binding: Binding, status: string) => Promise<void> = async () => {}) {
+    this.status = new ThreadStatus(setStatus);
     this.interactions = new Interactions(codex.rpc, store);
     codex.rpc.on('notification', (method: string, params: Record<string, unknown>) => {
-      try { this.notification(method, params); }
-      catch { console.error('Could not record a Codex notification'); }
+      if (this.scheduledEvents) {
+        this.event(String(params.threadId ?? ''), async () => {
+          if (!await this.scheduledEvents!.notification(method, params)) this.notification(method, params);
+        });
+      } else {
+        try { this.notification(method, params); }
+        catch { console.error('Could not record a Codex notification'); }
+      }
     });
     codex.rpc.on('request', (request: ServerRequest) => {
-      try {
-        const binding = this.store.byThread(String(record(request.params).threadId ?? ''));
-        if (binding && !this.enabled(binding)) { codex.rpc.reject(request.id, 'Channel binding is disabled'); return; }
-        this.interactions.receive(request);
-      }
-      catch {
-        codex.rpc.reject(request.id, 'Bridge could not display the request');
-        console.error('Could not display a Codex request');
-      }
-      void this.flush();
+      const receive = async () => {
+        try {
+          await this.scheduledEvents?.request(request);
+          const binding = this.store.byThread(String(record(request.params).threadId ?? ''));
+          if (binding && !this.enabled(binding)) { codex.rpc.reject(request.id, 'Channel binding is disabled'); return; }
+          this.interactions.receive(request);
+        }
+        catch {
+          codex.rpc.reject(request.id, 'Bridge could not display the request');
+          console.error('Could not display a Codex request');
+        }
+        await this.flush();
+      };
+      if (this.scheduledEvents) this.event(String(request.params.threadId ?? ''), receive);
+      else void receive();
     });
     codex.rpc.on('disconnect', () => {
+      void this.status.clear();
       this.interactions.clear();
       if (!this.stopped) for (const thread of this.running) {
         const binding = this.store.byThread(thread);
@@ -55,6 +82,7 @@ export class Bridge {
     for (const thread of this.running) {
       const binding = this.store.byThread(thread);
       if (!binding || !channels.includes(binding.channel)) continue;
+      this.status.set(binding, false);
       this.interactions.clear(thread);
       try { await this.codex.interrupt(thread); }
       catch { console.error('Could not confirm interruption of disabled channel work.'); }
@@ -62,8 +90,9 @@ export class Bridge {
   }
   async stop(): Promise<void> {
     this.stopped = true;
+    await this.status.clear();
     this.codex.rpc.close();
-    await Promise.allSettled(this.queues.values());
+    await Promise.allSettled([...this.queues.values(), ...this.events.values()]);
   }
   ingest(team: unknown, value: unknown): boolean {
     const event = record(value);
@@ -137,14 +166,16 @@ export class Bridge {
     if (method === 'turn/started') this.running.add(thread);
     if (method === 'turn/completed') this.running.delete(thread);
     if (method === 'serverRequest/resolved') this.interactions.resolved(params.requestId, thread);
+    if (method === 'item/started') this.interactions.observe(thread, String(params.turnId), record(params.item));
     const binding = this.store.byThread(thread);
     if (!binding) return;
+    if (method === 'turn/completed') this.status.set(binding, false);
     if (!this.enabled(binding)) {
       this.interactions.clear(thread);
       if (method === 'turn/started') void this.codex.interrupt(thread).catch(() => console.error('Could not interrupt disabled channel work.'));
       return;
     }
-    if (method === 'item/started') this.interactions.observe(thread, String(params.turnId), record(params.item));
+    if (method === 'turn/started' && !this.stopped) this.status.set(binding, true);
     if (method === 'item/completed') {
       const item = record(params.item);
       if (item.type === 'agentMessage' && typeof item.text === 'string') {
@@ -175,6 +206,7 @@ export class Bridge {
           this.store.deliveryStatus(delivery.id, 'sending');
           try {
             await this.post(binding, JSON.parse(delivery.payload) as Message);
+            this.status.afterMessage(binding);
             this.store.deliveryStatus(delivery.id, 'sent');
           } catch {
             // Don't replay an ambiguous Slack write. A user can recover via !status.
