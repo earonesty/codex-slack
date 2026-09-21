@@ -2,6 +2,16 @@ import type { LocalAttachment } from './attachments.ts';
 import { record } from './config.ts';
 import { Rpc } from './rpc.ts';
 
+export type CodexThread = {
+  id: string;
+  cwd: string;
+  name?: string;
+  preview?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  status?: { type?: string };
+};
+
 export class Codex {
   private loaded = new Set<string>();
   readonly active = new Map<string, string>();
@@ -35,6 +45,23 @@ export class Codex {
       if (typeof turn?.id === 'string') this.active.set(thread, turn.id);
     }
     this.loaded.add(thread);
+  }
+  async read(thread: string): Promise<CodexThread> {
+    await this.rpc.start();
+    const result = record(await this.rpc.request('thread/read', { threadId: thread, includeTurns: false }));
+    const data = record(result.thread);
+    if (typeof data.id !== 'string' || typeof data.cwd !== 'string') throw new Error('Codex returned an invalid thread');
+    return data as CodexThread;
+  }
+  async list(cwd: string, limit = 100): Promise<{ threads: CodexThread[]; more: boolean }> {
+    await this.rpc.start();
+    const result = record(await this.rpc.request('thread/list', {
+      cwd, limit, sortKey: 'updated_at', sortDirection: 'desc',
+      sourceKinds: ['cli', 'vscode', 'exec', 'appServer', 'unknown'],
+    }));
+    if (!Array.isArray(result.data)) throw new Error('Codex returned an invalid thread list');
+    const threads = result.data.map(record).filter(thread => typeof thread.id === 'string' && typeof thread.cwd === 'string') as CodexThread[];
+    return { threads, more: typeof result.nextCursor === 'string' && !!result.nextCursor };
   }
   async input(thread: string, text: string, files: LocalAttachment[] = []): Promise<void> {
     await this.resume(thread);

@@ -16,6 +16,7 @@ import { ScheduleStore } from './schedule-store.ts';
 import { Scheduler } from './scheduler.ts';
 import { listenControl } from './control.ts';
 import { recoverRestart } from './restart.ts';
+import { ThreadCommands } from './thread-commands.ts';
 import type { Server } from 'node:net';
 
 async function main(): Promise<void> {
@@ -53,6 +54,18 @@ async function main(): Promise<void> {
   }, async (binding, status) => {
     await app.client.assistant.threads.setStatus({ channel_id: binding.channel, thread_ts: binding.root, status });
   }, files => attachments.prepare(files));
+  const threadCommands = new ThreadCommands(config, store, bridge.codex,
+    Object.entries(config.channels).map(([channel, binding]) => ({
+      channel, cwd: binding.cwd,
+      name: directory.channels.find(item => item.id === channel)?.name ?? path.basename(binding.cwd),
+    })),
+    async (project, text) => {
+      const result = await app.client.chat.postMessage({ channel: project.channel, text,
+        unfurl_links: false, unfurl_media: false, parse: 'none' });
+      if (!result.ts) throw new Error('Slack returned no message timestamp');
+      return { channel: project.channel, ts: result.ts };
+    },
+    async (channel, ts) => (await app.client.chat.getPermalink({ channel, message_ts: ts })).permalink);
   const onboarding = new Onboarding(config, store, async (channel, message) => {
     await app.client.chat.postMessage({ channel, text: message.text, blocks: message.blocks,
       unfurl_links: false, unfurl_media: false, parse: 'none' });
@@ -72,6 +85,26 @@ async function main(): Promise<void> {
   app.event('message', async ({ body, event }) => {
     const team = record(body).team_id;
     if (!await onboarding.message(team, event)) bridge.ingest(team, event);
+  });
+  app.command('/threads', async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const text = await threadCommands.list({ team: command.team_id, user: command.user_id,
+        channel: command.channel_id, request: command.trigger_id }, command.text);
+      await respond({ response_type: 'ephemeral', text });
+    } catch (error) {
+      await respond({ response_type: 'ephemeral', text: error instanceof Error ? error.message : 'Could not list Codex threads.' });
+    }
+  });
+  app.command('/thread', async ({ ack, command, respond }) => {
+    await ack();
+    try {
+      const text = await threadCommands.connect({ team: command.team_id, user: command.user_id,
+        channel: command.channel_id, request: command.trigger_id }, command.text);
+      await respond({ response_type: 'ephemeral', text });
+    } catch (error) {
+      await respond({ response_type: 'ephemeral', text: error instanceof Error ? error.message : 'Could not connect that Codex thread.' });
+    }
   });
   app.action('bind:open', async ({ ack, body, action, client }) => {
     await ack();

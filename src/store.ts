@@ -135,6 +135,17 @@ export class Store {
   bind(key: string, thread: string): void {
     this.db.prepare('UPDATE bindings SET thread=? WHERE key=?').run(thread, key);
   }
+  attach(binding: Binding, user: string, id: string): void {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('INSERT INTO bindings(key,channel,root,cwd,thread) VALUES(?,?,?,?,?)')
+        .run(binding.key, binding.channel, binding.root, binding.cwd, binding.thread);
+      // Keep the operator durable for restart handoffs without dispatching the slash command to Codex.
+      this.db.prepare("INSERT INTO inbox(id,key,user,text,unsupported,files,status) VALUES(?,?,?,?,0,'[]','done')")
+        .run(id, binding.key, user, '/thread');
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   addBinding(binding: Binding): void {
     this.db.prepare('INSERT INTO bindings(key,channel,root,cwd,thread) VALUES(?,?,?,?,?)')
       .run(binding.key, binding.channel, binding.root, binding.cwd, binding.thread);

@@ -5,7 +5,7 @@ A small, self-hosted Slack bridge to **native Codex app-server sessions**.
 - **Channel = project directory.** Bind `#controller` to `~/work` and project channels to their folders.
 - **Slack thread = Codex session.** A top-level message creates a session. Replies continue it, or steer its active turn.
 - Codex's completed assistant messages (including progress) appear in the same Slack thread.
-- Approvals have buttons. Codex questions have answer forms. `!stop` interrupts a turn; `!status` shows the session and latest answer.
+- Approvals have buttons. Codex questions have answer forms. `!stop` interrupts a turn; `!status` shows the session and latest answer. `/threads` discovers saved Codex threads and `/thread` connects one to Slack.
 - Slack shows “Codex is working…” during a turn, including between progress replies. The indicator refreshes every minute and clears on completion, interruption, disconnect, or shutdown. It uses the existing `chat:write` scope; no app reinstall is needed. Status API failures are logged without blocking replies.
 
 No routing model, terminal scraping, private SDK imports, or edits to Codex's session files. The bridge uses [Codex's public app-server protocol](https://developers.openai.com/codex/app-server), Slack Bolt, and Node's built-in SQLite. Codex manages its own history, model, skills, instructions, permissions, and memories.
@@ -42,7 +42,13 @@ In Slack's **Create New App → From a manifest** flow, choose your workspace an
 ```json
 {
   "display_information": { "name": "Codex Slack", "description": "Direct access to local Codex sessions", "background_color": "#202123" },
-  "features": { "bot_user": { "display_name": "Codex", "always_online": false } },
+  "features": {
+    "bot_user": { "display_name": "Codex", "always_online": false },
+    "slash_commands": [
+      { "command": "/threads", "description": "List Codex threads for a configured project", "usage_hint": "[project]", "should_escape": false },
+      { "command": "/thread", "description": "Connect Slack to an existing Codex thread", "usage_hint": "<project-name-or-UUID>", "should_escape": false }
+    ]
+  },
   "oauth_config": { "scopes": { "bot": ["files:read", "channels:history", "channels:join", "channels:read", "chat:write", "groups:history", "groups:read", "users:read"] } },
   "settings": {
     "event_subscriptions": { "bot_events": ["message.channels", "message.groups", "member_joined_channel"] },
@@ -94,6 +100,12 @@ Write a new message in a configured channel to start work. Reply in that message
 | `!status` | Show the session ID, directory, status, and latest final answer |
 | `!stop` | Interrupt the active turn |
 | `!help` | Show commands |
+| `/threads` | List saved Codex threads whose working directory exactly matches this channel's project |
+| `/threads project-name` | List saved Codex threads for another configured project |
+| `/thread UUID` | Create a Slack conversation connected to that exact saved Codex thread |
+| `/thread project-name` | Connect the most recently updated Codex thread for that configured project |
+
+Slash commands are invoked from the message composer, not inside a Slack thread. `/thread` posts a new top-level message in the configured channel for the selected thread's working directory; reply under that message to continue the native Codex conversation. A thread already connected to Slack is not rebound—the command returns its existing permalink. Project names accept the configured Slack channel name, the directory basename, or the absolute configured directory. Thread discovery includes interactive CLI, VS Code, exec, app-server, and legacy/unknown sessions, but excludes internal sub-agent threads. Apply the current app manifest before using these commands.
 
 ### Attachments
 
@@ -175,7 +187,7 @@ Version 0.1 is intentionally narrow:
 - Up to 10 uploaded files per message, 25 MiB each and 50 MiB total. Remote file links (such as cloud document shares) must be uploaded as actual files. If any attachment fails, the whole prompt is held back with a visible error.
 - MCP elicitation forms/URL confirmations are declined visibly. Native Codex `requestUserInput` questions are supported. Secret question fields and oversized approval forms are rejected rather than truncated or silently approved.
 - Approval buttons offer one-time decisions, not persistent rule changes. Permission grants last for the current turn. File approval cards include the proposed changes; if that event is missing, only negative decisions are offered.
-- No attachment to an independently running terminal session, remote app-server transport, slash commands, or team orchestration.
+- No attachment to a currently running terminal process, remote app-server transport, or team orchestration. `/thread` resumes the selected saved conversation through this bridge's app-server connection; it does not take over another live process.
 - Outputs are forwarded when each assistant message completes, not token by token. Standard model-generated Markdown is currently displayed as plain text to avoid unintended Slack mentions.
 - No scheduled database pruning. Remove or archive the private state directory only when you no longer need its bindings and delivery history.
 

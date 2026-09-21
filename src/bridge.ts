@@ -141,7 +141,7 @@ export class Bridge {
       if (message.unsupported) {
         throw new AttachmentError('This attachment was received by an older bridge without file metadata. Resend the message with its attachments.');
       } else if (!message.files?.length && message.text.trim() === '!help') {
-        this.say(binding.key, 'Top-level messages start Codex sessions; thread replies continue or steer them. Commands: !status, !stop, !help. Use !bind in an unbound channel to choose its directory. A new top-level message starts fresh.');
+        this.say(binding.key, 'Top-level messages start Codex sessions; thread replies continue or steer them. Message commands: !status, !stop, !help. Slash commands: /threads lists saved project threads; /thread <project-or-UUID> connects one in a new Slack conversation. Use !bind in an unbound channel to choose its directory. A new top-level message starts fresh.');
       } else if (!message.files?.length && message.text.trim() === '!status') {
         this.say(binding.key, binding.thread ? await this.codex.status(binding.thread) : `No Codex session yet. Directory: ${binding.cwd}`);
       } else if (!message.files?.length && message.text.trim() === '!stop') {
