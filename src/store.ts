@@ -8,6 +8,7 @@ export type Delivery = { id: string; key: string; payload: string };
 export type ChannelSetup = { team: string; channel: string; token: string; cwd: string | null; prompted: number };
 export type Restart = { id: string; thread: string; key: string; user: string; invocation: string;
   requested: number; status: 'pending' | 'queued' | 'failed'; detail: string | null };
+export type ThreadChoice = { token: string; key: string; thread: string; created: number };
 
 /** Only bridge-owned state lives here. Never reads or writes Codex's files. */
 export class Store {
@@ -37,6 +38,9 @@ export class Store {
         team TEXT NOT NULL, channel TEXT NOT NULL, cwd TEXT, PRIMARY KEY(team,channel)
       );
       CREATE TABLE IF NOT EXISTS disabled_sessions (key TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS thread_choices (
+        token TEXT PRIMARY KEY, key TEXT NOT NULL, thread TEXT NOT NULL, created INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS restarts (
         id TEXT PRIMARY KEY, thread TEXT NOT NULL, key TEXT NOT NULL, user TEXT NOT NULL,
         invocation TEXT NOT NULL, requested INTEGER NOT NULL,
@@ -135,15 +139,26 @@ export class Store {
   bind(key: string, thread: string): void {
     this.db.prepare('UPDATE bindings SET thread=? WHERE key=?').run(thread, key);
   }
-  attach(binding: Binding, user: string, id: string): void {
+  addThreadChoice(key: string, thread: string, now = Date.now()): string {
+    const token = randomUUID();
+    this.db.prepare('INSERT INTO thread_choices(token,key,thread,created) VALUES(?,?,?,?)').run(token, key, thread, now);
+    return token;
+  }
+  threadChoice(token: string, now = Date.now()): ThreadChoice | undefined {
+    this.db.prepare('DELETE FROM thread_choices WHERE created<?').run(now - 24 * 60 * 60 * 1000);
+    return this.db.prepare('SELECT * FROM thread_choices WHERE token=?').get(token) as ThreadChoice | undefined;
+  }
+  bindChoice(token: string): Binding {
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      this.db.prepare('INSERT INTO bindings(key,channel,root,cwd,thread) VALUES(?,?,?,?,?)')
-        .run(binding.key, binding.channel, binding.root, binding.cwd, binding.thread);
-      // Keep the operator durable for restart handoffs without dispatching the slash command to Codex.
-      this.db.prepare("INSERT INTO inbox(id,key,user,text,unsupported,files,status) VALUES(?,?,?,?,0,'[]','done')")
-        .run(id, binding.key, user, '/thread');
+      const choice = this.db.prepare('SELECT * FROM thread_choices WHERE token=?').get(token) as ThreadChoice | undefined;
+      if (!choice) throw new Error('This thread choice has expired. Run !threads again.');
+      const changed = this.db.prepare('UPDATE bindings SET thread=? WHERE key=? AND thread IS NULL').run(choice.thread, choice.key).changes;
+      if (!changed) throw new Error('This Slack conversation is already connected to a Codex thread.');
+      this.db.prepare('DELETE FROM thread_choices WHERE key=?').run(choice.key);
+      const binding = this.get(choice.key)!;
       this.db.exec('COMMIT');
+      return binding;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   addBinding(binding: Binding): void {

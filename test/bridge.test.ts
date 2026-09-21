@@ -299,3 +299,45 @@ test('idle stop and status commands never create a model session', async t => {
   assert.match(outputs[1]!, /^No Codex session yet/);
   assert.equal(store.get('T123:C123:1.1')!.thread, null);
 });
+
+test('!threads offers project-scoped buttons that connect an unbound Slack conversation', async t => {
+  const rpc = new Rpc(process.execPath, [fake]); const codex = new Codex(rpc); const store = new Store(':memory:');
+  const outputs: { root: string; text: string; blocks?: unknown[] }[] = [];
+  const bridge = new Bridge(config, store, codex, async (binding, message) => {
+    outputs.push({ root: binding.root, text: message.text, blocks: message.blocks });
+  });
+  t.after(async () => { await bridge.stop(); store.close(); });
+  const thread = await codex.create(tmpdir());
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '10.1', text: '!threads' });
+  await until(() => outputs.some(output => output.root === '10.1' && output.blocks?.length));
+  assert.equal(store.get('T123:C123:10.1')?.thread, null);
+  const blocks = outputs.find(output => output.root === '10.1')!.blocks as any[];
+  const button = blocks.map(block => block.accessory).find(accessory => accessory?.action_id === 'tc:connect');
+  assert.ok(button?.value);
+  assert.match(await bridge.connectChoice(button.value, 'T123', 'U123', 'C123'), new RegExp(thread));
+  assert.equal(store.get('T123:C123:10.1')?.thread, thread);
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '10.2', thread_ts: '10.1', text: 'continue here' });
+  await until(() => outputs.some(output => output.text === 'Reply: continue here'));
+});
+
+test('!thread refuses cross-project, occupied, and already-connected conversations', async t => {
+  const rpc = new Rpc(process.execPath, [fake]); const codex = new Codex(rpc); const store = new Store(':memory:');
+  const outputs: string[] = [];
+  const bridge = new Bridge(config, store, codex, async (_, message) => { outputs.push(message.text); });
+  const other = mkdtempSync(path.join(tmpdir(), 'codex-other-project-'));
+  t.after(async () => { await bridge.stop(); store.close(); rmSync(other, { recursive: true, force: true }); });
+  const wrongProject = await codex.create(other);
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '20.1', text: `!thread ${wrongProject}` });
+  await until(() => outputs.some(output => output.includes('different project')));
+  assert.equal(store.get('T123:C123:20.1')?.thread, null);
+
+  const available = await codex.create(tmpdir());
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '20.2', text: `!thread ${available}` });
+  await until(() => store.get('T123:C123:20.2')?.thread === available);
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '20.3', text: `!thread ${available}` });
+  await until(() => outputs.some(output => output.includes('already connected')));
+  assert.equal(store.get('T123:C123:20.3')?.thread, null);
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '20.4', thread_ts: '20.2', text: `!thread ${wrongProject}` });
+  await until(() => outputs.some(output => output.includes('Start a new top-level message')));
+  assert.equal(store.get('T123:C123:20.2')?.thread, available);
+});

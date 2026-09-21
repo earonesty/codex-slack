@@ -1,12 +1,6 @@
 {
   "display_information": { "name": "Codex Slack", "description": "Direct access to local Codex sessions", "background_color": "#202123" },
-  "features": {
-    "bot_user": { "display_name": "Codex", "always_online": false },
-    "slash_commands": [
-      { "command": "/threads", "description": "List Codex threads for a configured project", "usage_hint": "[project]", "should_escape": false },
-      { "command": "/thread", "description": "Connect Slack to an existing Codex thread", "usage_hint": "<project-name-or-UUID>", "should_escape": false }
-    ]
-  },
+  "features": { "bot_user": { "display_name": "Codex", "always_online": false } },
   "oauth_config": { "scopes": { "bot": ["files:read", "channels:history", "channels:join", "channels:read", "chat:write", "groups:history", "groups:read", "users:read"] } },
   "settings": {
     "event_subscriptions": { "bot_events": ["message.channels", "message.groups", "member_joined_channel"] },

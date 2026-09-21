@@ -7,6 +7,9 @@ import { chunks, textMessage, type Message } from './messages.ts';
 import { RpcError, type ServerRequest } from './rpc.ts';
 import { Store, type Binding, type Incoming } from './store.ts';
 import { ThreadStatus } from './thread-status.ts';
+import type { KnownBlock } from '@slack/types';
+
+export class ThreadCommandError extends Error {}
 
 export class Bridge {
   readonly interactions: Interactions;
@@ -141,7 +144,13 @@ export class Bridge {
       if (message.unsupported) {
         throw new AttachmentError('This attachment was received by an older bridge without file metadata. Resend the message with its attachments.');
       } else if (!message.files?.length && message.text.trim() === '!help') {
-        this.say(binding.key, 'Top-level messages start Codex sessions; thread replies continue or steer them. Message commands: !status, !stop, !help. Slash commands: /threads lists saved project threads; /thread <project-or-UUID> connects one in a new Slack conversation. Use !bind in an unbound channel to choose its directory. A new top-level message starts fresh.');
+        this.say(binding.key, 'Top-level messages start Codex sessions; thread replies continue or steer them. Commands: !threads lists saved conversations for this channel\'s project; !thread <UUID> connects an unbound Slack conversation; !status, !stop, !help. Use !bind in an unbound channel to choose its directory.');
+      } else if (!message.files?.length && message.text.trim() === '!threads') {
+        await this.listThreads(binding);
+      } else if (!message.files?.length && /^!thread(?:\s|$)/.test(message.text.trim())) {
+        const thread = message.text.trim().slice('!thread'.length).trim();
+        if (!thread) throw new ThreadCommandError('Usage: !thread <UUID>');
+        await this.connectThread(binding, thread);
       } else if (!message.files?.length && message.text.trim() === '!status') {
         this.say(binding.key, binding.thread ? await this.codex.status(binding.thread) : `No Codex session yet. Directory: ${binding.cwd}`);
       } else if (!message.files?.length && message.text.trim() === '!stop') {
@@ -160,15 +169,82 @@ export class Bridge {
       }
       this.store.mark(message.id, 'done');
     } catch (error) {
-      this.store.mark(message.id, error instanceof RpcError || error instanceof AttachmentError ? 'failed' : 'uncertain');
+      this.store.mark(message.id, error instanceof RpcError || error instanceof AttachmentError || error instanceof ThreadCommandError ? 'failed' : 'uncertain');
       // Protocol errors may contain shell output, secrets, or private paths; keep logs generic.
-      this.say(binding.key, error instanceof AttachmentError
+      this.say(binding.key, error instanceof ThreadCommandError ? error.message : error instanceof AttachmentError
         ? `${error.message} This message was not sent to Codex.`
         : error instanceof RpcError
         ? 'Codex rejected this instruction. It was not retried and the session binding was preserved. Use !status, then send a new instruction when ready.'
         : 'Could not confirm delivery to Codex. This instruction may have been accepted; it was not resent. Use !status before continuing.');
     }
     await this.flush();
+  }
+  private threadLabel(thread: { name?: string; preview?: string }): string {
+    const value = thread.name || thread.preview?.split('\n')[0] || '(untitled)';
+    return value.length > 100 ? `${value.slice(0, 97)}...` : value;
+  }
+  private async listThreads(binding: Binding): Promise<void> {
+    let result;
+    try { result = await this.codex.list(binding.cwd); }
+    catch { throw new ThreadCommandError('Could not list saved Codex threads. Try again in a moment.'); }
+    if (!result.threads.length) { this.say(binding.key, `No saved Codex threads found for ${binding.cwd}.`); return; }
+    for (let offset = 0; offset < result.threads.length; offset += 20) {
+      const page = result.threads.slice(offset, offset + 20);
+      const blocks: KnownBlock[] = [{ type: 'header', text: { type: 'plain_text', text: offset ? 'More Codex threads' : 'Saved Codex threads' } }];
+      const lines: string[] = [];
+      for (const thread of page) {
+        const existing = this.store.byThread(thread.id);
+        const timestamp = thread.updatedAt ?? thread.createdAt;
+        const when = timestamp ? new Date(timestamp * 1000).toISOString().slice(0, 16).replace('T', ' ') + 'Z' : 'unknown time';
+        const detail = `${this.threadLabel(thread)}\n${thread.id} · ${when}${existing ? ' · already connected' : ''}`;
+        lines.push(detail);
+        const accessory = !binding.thread && !existing ? { type: 'button' as const,
+          text: { type: 'plain_text' as const, text: 'Connect' }, action_id: 'tc:connect',
+          value: this.store.addThreadChoice(binding.key, thread.id) } : undefined;
+        blocks.push({ type: 'section', text: { type: 'plain_text', text: detail }, ...(accessory ? { accessory } : {}) });
+      }
+      if (offset === 0 && binding.thread) blocks.splice(1, 0, { type: 'context', elements: [{ type: 'plain_text', text: 'This Slack conversation is already connected. Start a new top-level !threads message to use Connect.' }] });
+      if (offset + page.length === result.threads.length && result.more) blocks.push({ type: 'context', elements: [{ type: 'plain_text', text: 'Showing the 100 most recently updated threads.' }] });
+      this.store.enqueue(binding.key, { text: lines.join('\n\n'), blocks });
+    }
+  }
+  private async checkedThread(binding: Binding, threadId: string) {
+    let thread;
+    try { thread = await this.codex.read(threadId); }
+    catch { throw new ThreadCommandError('No saved Codex thread matched that UUID. Run !threads to choose one.'); }
+    if (thread.cwd !== binding.cwd) throw new ThreadCommandError('That Codex thread belongs to a different project. Run !threads in its project channel.');
+    const existing = this.store.byThread(thread.id);
+    if (existing && existing.key !== binding.key) throw new ThreadCommandError(`That Codex thread is already connected in <#${existing.channel}>.`);
+    if (this.codex.active.has(thread.id) && !existing) throw new ThreadCommandError('That Codex thread is currently active. Stop its work before connecting it here.');
+    return thread;
+  }
+  private async connectThread(binding: Binding, threadId: string): Promise<void> {
+    if (binding.thread) throw new ThreadCommandError(`This Slack conversation is already connected to ${binding.thread}. Start a new top-level message to connect another thread.`);
+    const thread = await this.checkedThread(binding, threadId);
+    try { this.store.bind(binding.key, thread.id); }
+    catch { throw new ThreadCommandError('That Codex thread was connected elsewhere before this request completed. Run !threads again.'); }
+    binding.thread = thread.id;
+    this.say(binding.key, `Connected to Codex thread ${thread.id}. Reply here to continue: ${this.threadLabel(thread)}`);
+  }
+  async connectChoice(token: string, team: unknown, user: unknown, channel: unknown): Promise<string> {
+    const choice = this.store.threadChoice(token);
+    const binding = choice && this.store.get(choice.key);
+    if (!choice || !binding) throw new ThreadCommandError('This thread choice has expired. Run !threads again.');
+    if (!authorized(this.config, team, user, channel) || binding.channel !== channel || !this.enabled(binding)) {
+      throw new ThreadCommandError('You are not authorized to connect this thread.');
+    }
+    if (binding.thread) throw new ThreadCommandError('This Slack conversation is already connected to a Codex thread.');
+    const thread = await this.checkedThread(binding, choice.thread);
+    let connected: Binding;
+    try { connected = this.store.bindChoice(token); }
+    catch (error) {
+      const message = error instanceof Error && error.message.startsWith('This Slack conversation')
+        ? error.message : 'That Codex thread was connected elsewhere before this request completed. Run !threads again.';
+      throw new ThreadCommandError(message);
+    }
+    this.say(connected.key, `Connected to Codex thread ${thread.id}. Reply here to continue: ${this.threadLabel(thread)}`);
+    await this.flush();
+    return `Connected to ${thread.id}.`;
   }
   private notification(method: string, params: Record<string, unknown>): void {
     const thread = String(params.threadId ?? '');
