@@ -44,7 +44,7 @@ Recurring tasks use five-field cron (`minute hour day month weekday`) plus an IA
 - Use `verbosity:"verbose"` when the user wants starts, progress, and no-op results. To change it, read `get <id>`, preserve the full task definition, change `verbosity`, and call `put`. Human replies in existing run threads remain normal conversations.
 - Each visible linked run uses a fresh Slack thread bound to its actual Codex session. The bridge delivers output, questions, and approvals; replies continue that session. Do not separately send the same summary through a Slack connector.
 - `history [task-id]` returns the latest 30 runs, session IDs, final output, and failures, including local-only results. Local-only runs needing judgment finish with a question for inspection in history.
-- The daemon must be running. After downtime, an overdue task runs once, without replaying every missed occurrence. Active or uncertain work blocks overlapping scheduled work in the same or nested folder. Recurring occurrences are skipped while busy; one-shot tasks remain due.
+- The daemon must be running. After downtime, an overdue task runs once, without replaying every missed occurrence. A restart before agent-session creation is safely recorded as interrupted and does not block later work. Active work or an uncertain run whose agent session may have received the prompt blocks overlapping scheduled work in the same or nested folder. Recurring occurrences are skipped while busy; one-shot tasks remain due.
 
 ## Manage or recover
 

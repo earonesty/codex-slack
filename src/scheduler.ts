@@ -79,8 +79,12 @@ export class Scheduler {
       return true;
     } catch {
       run = this.db.run(run.id)!;
-      this.db.update({ ...run, status: 'uncertain', deliveryState: 'uncertain',
-        error: 'Could not confirm Slack delivery. Inspect history and the session before resolving; delivery was not retried.' });
+      const sessionStarted = Boolean(run.thread);
+      this.db.update({ ...run, status: sessionStarted ? 'uncertain' : 'failed',
+        finished: sessionStarted ? run.finished : this.now(), deliveryState: 'uncertain',
+        error: sessionStarted
+          ? 'Could not confirm Slack delivery. Inspect history and the session before resolving; delivery was not retried.'
+          : 'Could not confirm Slack delivery before an agent session was created. No task prompt was dispatched; future occurrences remain unblocked.' });
       return false;
     }
   }
@@ -202,8 +206,11 @@ export class Scheduler {
     } catch (error) {
       const saved = this.db.run(run.id)!;
       if (saved.status === 'starting' || saved.status === 'running') {
-        this.db.update({ ...saved, status: error instanceof AgentError ? 'failed' : 'uncertain', finished: this.now(),
-          error: 'Could not confirm scheduled task delivery. Inspect the session and Slack thread before resolving; it was not retried.' });
+        const promptMayHaveRun = Boolean(saved.thread);
+        this.db.update({ ...saved, status: error instanceof AgentError || !promptMayHaveRun ? 'failed' : 'uncertain', finished: this.now(),
+          error: promptMayHaveRun
+            ? 'Could not confirm scheduled task delivery. Inspect the session and Slack thread before resolving; it was not retried.'
+            : 'Agent session creation did not complete, so no task prompt was dispatched. Future occurrences remain unblocked.' });
         await this.ensureRoot(saved);
         const delivered = this.db.run(run.id)!;
         if (delivered.key) this.bridge.say(delivered.key, 'Could not confirm this scheduled run. It was not repeated. Use !status to inspect the saved session.');

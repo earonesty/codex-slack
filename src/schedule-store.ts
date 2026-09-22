@@ -70,8 +70,17 @@ export class ScheduleStore {
   }
   recover(): Run[] {
     const active = this.active().filter(run => run.status !== 'uncertain');
-    for (const run of active) this.update({ ...run, status: 'uncertain',
-      error: 'Bridge stopped during this run. Work was not replayed. Inspect the saved session before resolving this run.' });
-    return active;
+    const uncertain: Run[] = [];
+    for (const run of active) {
+      if (!run.thread) {
+        this.update({ ...run, status: 'interrupted', finished: Date.now(),
+          error: 'Bridge stopped before an agent session was created. No task prompt was dispatched; future occurrences remain unblocked.' });
+        continue;
+      }
+      this.update({ ...run, status: 'uncertain',
+        error: 'Bridge stopped after creating an agent session. Work was not replayed. Inspect the saved session before resolving this run.' });
+      uncertain.push(run);
+    }
+    return uncertain;
   }
 }

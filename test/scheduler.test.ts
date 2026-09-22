@@ -146,17 +146,15 @@ test('two simultaneous run requests cannot launch overlapping work', async t => 
   assert.equal(f.roots.length, 0); assert.equal(f.db.active().length, 1);
 });
 
-test('ambiguous Slack launch is recorded once, blocks overlapping work, and is never replayed', async t => {
+test('ambiguous Slack launch before session creation fails without blocking future work', async t => {
   const f = fixture(t, true);
   const job = f.scheduler.put({ ...f.job, verbosity: 'verbose' });
   const run = await f.scheduler.launch(job);
-  assert.equal(run.status, 'uncertain'); assert.equal(run.thread, null);
-  await assert.rejects(f.scheduler.launch(job), /blocking/);
+  assert.equal(run.status, 'failed'); assert.equal(run.thread, null);
+  assert.equal(f.db.active().length, 0);
   f.setTime(job.nextAt!); await f.scheduler.tick();
-  assert.equal(f.roots.length, 1);
-  assert.equal(f.db.history()[0]?.status, 'skipped');
-  await assert.rejects(f.scheduler.command({ action: 'resolve', id: run.id }), /note/);
-  await f.scheduler.command({ action: 'resolve', id: run.id, note: 'Verified no session was created' });
+  assert.equal(f.roots.length, 2);
+  assert.equal(f.db.history()[0]?.status, 'failed');
   assert.equal(f.db.active().length, 0);
 });
 
@@ -218,7 +216,7 @@ test('pause, resume and remove preserve history and do not run tasks', async t =
   assert.equal(f.db.list().length, 0);
 });
 
-test('durable intent survives reopening without replay and retains final output', t => {
+test('durable intent with a created session survives reopening without replay and retains final output', t => {
   const dir = mkdtempSync(path.join(tmpdir(), 'schedule-db-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const filename = path.join(dir, 'state.sqlite');
@@ -231,6 +229,17 @@ test('durable intent survives reopening without replay and retains final output'
   assert.equal(db.run('run')?.status, 'uncertain');
   assert.equal(db.run('run')?.output, 'Prior result');
   assert.equal(db.active().length, 1); db.close();
+});
+
+test('restart before session creation releases the schedule automatically', t => {
+  const f = fixture(t);
+  const job = f.scheduler.put(f.job);
+  f.db.add({ id: 'pre-session', jobId: job.id, cwd: job.cwd, thread: null, key: null,
+    status: 'starting', started: 1, finished: null, output: '', error: null, jobSnapshot: JSON.stringify(job) });
+  assert.equal(f.db.recover().length, 0);
+  assert.equal(f.db.run('pre-session')?.status, 'interrupted');
+  assert.match(f.db.run('pre-session')?.error ?? '', /No task prompt was dispatched/);
+  assert.equal(f.db.active().length, 0);
 });
 
 test('private control socket supports the complete save/read flow and returns validation failures', async t => {
