@@ -12,7 +12,7 @@ import { Rpc } from '../src/rpc.ts';
 import { recoverRestart } from '../src/restart.ts';
 
 const binding = { key: 'T123:C123:1.1', channel: 'C123', root: '1.1', cwd: tmpdir(), thread: 'saved-session' };
-const config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', codexBin: 'unused' };
+const config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', agent: { driver: 'codex' as const, command: 'unused' } };
 function seed(store: Store) {
   store.ingest({ ...binding, id: 'original', user: 'U123', text: 'Please restart the bridge', unsupported: false });
   store.bind(binding.key, binding.thread);
@@ -70,7 +70,7 @@ test('duplicate preparation, unknown sessions, and unauthorized recovery do not 
   assert.throws(() => store.prepareRestart('unknown-session', 'old'), /existing, enabled/);
   store.prepareRestart(binding.thread, 'old');
   assert.throws(() => store.prepareRestart(binding.thread, 'old'), /already pending/);
-  const revoked = new Bridge({ ...config, allowedUserIds: [] }, store, b.codex, async () => {});
+  const revoked = new Bridge({ ...config, allowedUserIds: [] }, store, b.agent, async () => {});
   recoverRestart(revoked, 'new');
   assert.equal(store.pending().length, 0);
   assert.equal(store.latestRestart()?.status, 'failed');

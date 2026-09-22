@@ -15,7 +15,7 @@ export async function setup(directory: Directory): Promise<void> {
   if (!stdin.isTTY) throw new Error('Run npm run setup in an interactive terminal, or copy config.example.json and edit the handles and channel names.');
   const ui = createInterface({ input: stdin, output: stdout });
   try {
-    console.log(`Connected to ${directory.teamName}.\nChoose who can control Codex:`);
+    console.log(`Connected to ${directory.teamName}.\nChoose who can control the agent bridge:`);
     directory.users.forEach((user, i) => console.log(`  ${i + 1}. ${user.label} (@${user.name})`));
     const selection = await ui.question('Your number: ');
     const index = /^\d+$/.test(selection.trim()) ? Number(selection) - 1 : -1;

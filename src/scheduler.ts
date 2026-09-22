@@ -3,7 +3,7 @@ import path from 'node:path';
 import { CronExpressionParser } from 'cron-parser';
 import { allowedDirectory, record } from './config.ts';
 import type { Bridge } from './bridge.ts';
-import { RpcError } from './rpc.ts';
+import { AgentError } from './agent.ts';
 import { ScheduleStore, type Job, type Run } from './schedule-store.ts';
 
 export function nextOccurrence(cron: string, timezone: string, after: number): number {
@@ -40,7 +40,7 @@ export class Scheduler {
         else db.update({ ...run, error: 'This run requested interaction without a Slack channel. Inspect its session and final output locally.' });
       },
     };
-    bridge.codex.rpc.on('disconnect', () => { if (!this.stopped) void this.recover(); });
+    bridge.agent.on('disconnect', () => { if (!this.stopped) void this.recover(); });
   }
   start(): void {
     void this.recover();
@@ -142,7 +142,7 @@ export class Scheduler {
   }
   private busy(job: Job): boolean {
     if (this.db.active().some(run => run.jobId === job.id || overlaps(run.cwd, job.cwd))) return true;
-    return [...this.bridge.codex.active.keys()].some(thread => {
+    return [...this.bridge.agent.active.keys()].some(thread => {
       const binding = this.bridge.store.byThread(thread);
       return binding && overlaps(binding.cwd, job.cwd);
     });
@@ -191,18 +191,18 @@ export class Scheduler {
       }
       this.valid(job);
       if (this.stopped) throw new Error('Scheduler stopped before session creation');
-      run.thread = await this.bridge.codex.create(job.cwd, { unattended: true });
+      run.thread = await this.bridge.agent.create(job.cwd, { unattended: true });
       if (run.key) this.bridge.store.bind(run.key, run.thread);
       this.db.update({ ...run, status: 'running' });
       this.valid(job);
       if (this.stopped) throw new Error('Scheduler stopped before task dispatch');
       const instruction = `${job.prompt}\n\n[Scheduled execution: ${job.id}]\nThis is one occurrence of an existing task; perform the work now. Do not create another schedule. When no action was taken, nothing changed, and no error, blocker, or question needs attention, return exactly [SILENT] as your final answer. Never use [SILENT] after an action or to hide a failure or request for judgment. Preserve the user's stated authorization and project instructions. Finish with a concise summary of findings, changes, verification, commits/deployment if requested, and any unresolved question.${job.channel ? ' Your output and questions are delivered to the linked Slack thread, where the user can reply.' : ' There is no linked Slack channel. If user judgment is required, finish with the question so it is saved in the local run history.'}`;
-      await this.bridge.codex.input(run.thread, instruction);
+      await this.bridge.agent.input(run.thread, job.cwd, instruction);
       // Completion may arrive before the turn/start acknowledgement; never overwrite it here.
     } catch (error) {
       const saved = this.db.run(run.id)!;
       if (saved.status === 'starting' || saved.status === 'running') {
-        this.db.update({ ...saved, status: error instanceof RpcError ? 'failed' : 'uncertain', finished: this.now(),
+        this.db.update({ ...saved, status: error instanceof AgentError ? 'failed' : 'uncertain', finished: this.now(),
           error: 'Could not confirm scheduled task delivery. Inspect the session and Slack thread before resolving; it was not retried.' });
         await this.ensureRoot(saved);
         const delivered = this.db.run(run.id)!;
@@ -254,8 +254,8 @@ export class Scheduler {
         const run = this.db.run(required(raw, 'id', 80));
         if (!run || run.status !== 'uncertain') throw new Error('resolve requires an uncertain run ID');
         const note = required(raw, 'note', 2000);
-        if (run.thread) await this.bridge.codex.resume(run.thread);
-        if (run.thread && this.bridge.codex.active.has(run.thread)) throw new Error('Run is still active');
+        if (run.thread) await this.bridge.agent.resume(run.thread, run.cwd);
+        if (run.thread && this.bridge.agent.active.has(run.thread)) throw new Error('Run is still active');
         return this.db.update({ ...run, status: 'interrupted', finished: this.now(), error: `Resolved after inspection: ${note}` });
       }
       default: {

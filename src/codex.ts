@@ -1,28 +1,36 @@
 import type { LocalAttachment } from './attachments.ts';
+import { Agent, type AgentThread } from './agent.ts';
 import { record } from './config.ts';
 import { Rpc } from './rpc.ts';
 
-export type CodexThread = {
-  id: string;
-  cwd: string;
-  name?: string;
-  preview?: string;
-  createdAt?: number;
-  updatedAt?: number;
-  status?: { type?: string };
-};
+export type CodexThread = AgentThread;
 
-export class Codex {
+export class Codex extends Agent {
+  readonly name = 'Codex';
+  readonly capabilities = { threadDiscovery: true, interactiveRequests: true };
   private loaded = new Set<string>();
   readonly active = new Map<string, string>();
   constructor(readonly rpc: Rpc) {
+    super();
     rpc.on('disconnect', () => { this.loaded.clear(); this.active.clear(); });
     rpc.on('notification', (method: string, params: Record<string, unknown>) => {
       const thread = String(params.threadId ?? '');
       if (method === 'turn/started') this.active.set(thread, String(record(params.turn).id));
       if (method === 'turn/completed' && this.active.get(thread) === record(params.turn).id) this.active.delete(thread);
     });
+    rpc.on('notification', (method, params) => this.emit('notification', method, params));
+    rpc.on('request', request => this.emit('request', request));
+    rpc.on('disconnect', error => this.emit('disconnect', error));
   }
+  start(): Promise<void> { return this.rpc.start(); }
+  async check(): Promise<void> {
+    await this.rpc.start();
+    const account = record(record(await this.rpc.request('account/read', {})).account);
+    if (!Object.keys(account).length) throw new Error('Codex is not logged in. Run codex login first.');
+  }
+  close(): void { this.rpc.close(); }
+  respond(id: string | number, result: unknown): void { this.rpc.respond(id, result); }
+  reject(id: string | number, message: string): void { this.rpc.reject(id, message); }
   async create(cwd: string, options: { unattended?: boolean } = {}): Promise<string> {
     await this.rpc.start();
     // Scheduled work needs filesystem/network access without an approval round trip.
@@ -63,7 +71,7 @@ export class Codex {
     const threads = result.data.map(record).filter(thread => typeof thread.id === 'string' && typeof thread.cwd === 'string') as CodexThread[];
     return { threads, more: typeof result.nextCursor === 'string' && !!result.nextCursor };
   }
-  async input(thread: string, text: string, files: LocalAttachment[] = []): Promise<void> {
+  async input(thread: string, _cwd: string, text: string, files: LocalAttachment[] = []): Promise<void> {
     await this.resume(thread);
     const turn = this.active.get(thread);
     const descriptions = files.length ? '\n\nAttached files (local copies; read them as needed):\n'

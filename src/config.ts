@@ -3,13 +3,14 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 export type Channel = { cwd: string };
+export type AgentConfig = { driver: 'codex' | 'claude'; command: string };
 export type Config = {
   root: string;
   teamId: string;
   allowedUserIds: string[];
   channels: Record<string, Channel>;
   stateDir: string;
-  codexBin: string;
+  agent: AgentConfig;
 };
 
 export function record(value: unknown): Record<string, unknown> {
@@ -41,11 +42,16 @@ export function parseConfig(value: unknown): Config {
     channels[id] = { cwd: resolved };
   }
   if (raw.stateDir !== undefined && (typeof raw.stateDir !== 'string' || !raw.stateDir.trim())) throw new Error('Invalid stateDir');
+  const agentRaw = record(raw.agent);
+  const driver = agentRaw.driver ?? 'codex';
+  if (driver !== 'codex' && driver !== 'claude') throw new Error('agent.driver must be codex or claude');
+  if (agentRaw.command !== undefined && (typeof agentRaw.command !== 'string' || !agentRaw.command.trim())) throw new Error('Invalid agent.command');
   if (raw.codexBin !== undefined && (typeof raw.codexBin !== 'string' || !raw.codexBin.trim())) throw new Error('Invalid codexBin');
+  if (raw.codexBin !== undefined && raw.agent !== undefined) throw new Error('Use agent.command instead of codexBin when agent is configured');
   return {
     root, teamId: raw.teamId, allowedUserIds: raw.allowedUserIds as string[], channels,
     stateDir: expandPath(raw.stateDir as string ?? '~/.local/state/codex-slack'),
-    codexBin: raw.codexBin as string ?? 'codex',
+    agent: { driver, command: String(agentRaw.command ?? raw.codexBin ?? driver) },
   };
 }
 

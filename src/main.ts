@@ -9,6 +9,8 @@ import { botToken, discover, loadResolvedConfig } from './discovery.ts';
 import { printDirectory, setup } from './setup.ts';
 import { Rpc } from './rpc.ts';
 import { Codex } from './codex.ts';
+import { Claude } from './claude.ts';
+import type { Agent } from './agent.ts';
 import { Store } from './store.ts';
 import { Bridge } from './bridge.ts';
 import { Onboarding } from './onboarding.ts';
@@ -25,14 +27,14 @@ async function main(): Promise<void> {
   if (process.argv.includes('--discover')) { printDirectory(directory); return; }
   if (process.argv.includes('--setup')) { await setup(directory); return; }
   const config = loadResolvedConfig(directory);
-  const rpc = new Rpc(config.codexBin);
+  const agent: Agent = config.agent.driver === 'claude'
+    ? new Claude(config.agent.command)
+    : new Codex(new Rpc(config.agent.command));
   if (process.argv.includes('--check')) {
     try {
-      await rpc.start();
-      const account = record(record(await rpc.request('account/read', {})).account);
-      if (!Object.keys(account).length) throw new Error('Codex is not logged in. Run codex login first.');
-      console.log(`Connected to ${directory.teamName}: ${Object.keys(config.channels).length} channel bindings validated. Codex handshake and login check passed. No model turn was started.`);
-    } finally { rpc.close(); }
+      await agent.check();
+      console.log(`Connected to ${directory.teamName}: ${Object.keys(config.channels).length} channel bindings validated. ${agent.name} authentication check passed. No model turn was started.`);
+    } finally { agent.close(); }
     return;
   }
   const appToken = process.env.SLACK_APP_TOKEN;
@@ -47,7 +49,7 @@ async function main(): Promise<void> {
   const app = new App({ token, appToken, socketMode: true,
     clientOptions: { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 10_000 } });
   const attachments = new Attachments(path.join(config.stateDir, 'attachments'), token, id => app.client.files.info({ file: id }));
-  const bridge = new Bridge(config, store, new Codex(rpc), async (binding, message) => {
+  const bridge = new Bridge(config, store, agent, async (binding, message) => {
     await app.client.chat.postMessage({ channel: binding.channel, thread_ts: binding.root,
       text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false, parse: 'none' });
   }, async (binding, status) => {
@@ -85,7 +87,7 @@ async function main(): Promise<void> {
       await client.chat.postEphemeral({ channel: String(channel), user: String(user), text });
     } catch (error) {
       await client.chat.postEphemeral({ channel: String(channel), user: String(user),
-        text: error instanceof Error ? error.message : 'Could not connect that Codex thread.' });
+        text: error instanceof Error ? error.message : `Could not connect that ${agent.name} session.` });
     }
   });
   app.action('bind:open', async ({ ack, body, action, client }) => {
@@ -121,8 +123,8 @@ async function main(): Promise<void> {
     }
     await ack();
     await app.client.chat.postMessage({ channel: binding.channel,
-      text: 'Directory saved. Send a new top-level message to start a Codex session.',
-      blocks: [{ type: 'section', text: { type: 'plain_text', text: `Bound to ${binding.cwd}. Send a new top-level message to start a Codex session.` } }],
+      text: `Directory saved. Send a new top-level message to start a ${agent.name} session.`,
+      blocks: [{ type: 'section', text: { type: 'plain_text', text: `Bound to ${binding.cwd}. Send a new top-level message to start a ${agent.name} session.` } }],
       unfurl_links: false, unfurl_media: false, parse: 'none' });
   });
   app.action(/^cs:/, async ({ ack, body, action, client }) => {
@@ -145,7 +147,7 @@ async function main(): Promise<void> {
         await client.views.open({ trigger_id: String(payload.trigger_id), view: bridge.interactions.modal(token) });
       } else bridge.interactions.choose(token, choice);
     } catch {
-      await client.chat.postEphemeral({ channel: String(channel), user: String(user), text: 'Could not submit this response. Check whether Codex is still waiting, then try again.' });
+      await client.chat.postEphemeral({ channel: String(channel), user: String(user), text: `Could not submit this response. Check whether ${agent.name} is still waiting, then try again.` });
     }
     await bridge.flush();
   });
@@ -179,7 +181,7 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => { void stop(); });
   process.on('SIGTERM', () => { void stop(); });
   try {
-    await rpc.start();
+    await agent.start();
     for (const channel of directory.channels.filter(channel => channel.joined)) {
       await onboarding.ask(config.teamId, channel.id);
     }
@@ -188,10 +190,10 @@ async function main(): Promise<void> {
     recoverRestart(bridge);
     bridge.start();
     scheduler.start();
-    console.log(`Codex Slack listening in ${Object.keys(config.channels).length} configured channels.`);
+    console.log(`Codex Slack listening with ${agent.name} in ${Object.keys(config.channels).length} configured channels.`);
   } catch (error) {
     scheduler.stop(); control?.close();
-    rpc.close(); scheduleStore.close(); store.close(); lease.close();
+    agent.close(); scheduleStore.close(); store.close(); lease.close();
     await app.stop().catch(() => {});
     throw error;
   }

@@ -1,5 +1,6 @@
 {
   "users": ["@earonesty"],
+  "agent": { "driver": "codex", "command": "codex" },
   "root": "~",
   "channels": {
     "#controller": "~/work",

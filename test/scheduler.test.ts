@@ -29,7 +29,7 @@ function fixture(t: TestContext, postFailure = false, postDelay = 0) {
   const db = new ScheduleStore(':memory:');
   const outputs: (Message & { key: string })[] = [];
   const roots: { channel: string; text: string }[] = [];
-  const config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: dir } }, stateDir: dir, codexBin: 'unused' };
+  const config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: dir } }, stateDir: dir, agent: { driver: 'codex' as const, command: 'unused' } };
   const bridge = new Bridge(config, store, codex, async (binding, message) => { outputs.push({ key: binding.key, ...message }); });
   let time = Date.parse('2026-09-13T15:00:00Z');
   const scheduler = new Scheduler(bridge, db, async (channel, text) => {

@@ -16,7 +16,7 @@ import { chunks } from '../src/messages.ts';
 import { Onboarding } from '../src/onboarding.ts';
 
 const fake = fileURLToPath(new URL('./fake-codex.mjs', import.meta.url));
-const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', codexBin: 'unused' };
+const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', agent: { driver: 'codex', command: 'unused' } };
 const incoming = (id = 'T123:C123:1.1'): Incoming => ({ id, user: 'U123', key: 'T123:C123:1.1', channel: 'C123', root: '1.1', cwd: tmpdir(), thread: null, text: 'hello', unsupported: false });
 
 async function until(predicate: () => boolean): Promise<void> {
@@ -33,6 +33,9 @@ test('configuration requires a workspace, explicit users, channel IDs, and exist
   assert.equal(authorized(valid, 'Tother', 'U123', 'C123'), false);
   assert.equal(authorized(valid, 'T123', 'Uother', 'C123'), false);
   assert.equal(authorized(valid, 'T123', 'U123', 'Cother'), false);
+  assert.deepEqual(parseConfig({ ...config, agent: { driver: 'claude', command: '/opt/claude' } }).agent,
+    { driver: 'claude', command: '/opt/claude' });
+  assert.equal(parseConfig({ ...config, agent: undefined, codexBin: '/opt/codex' }).agent.command, '/opt/codex');
 });
 
 test('message chunks preserve Unicode without dropping or splitting surrogate pairs', () => {

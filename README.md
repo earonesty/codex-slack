@@ -1,10 +1,10 @@
 # Codex Slack
 
-A small, self-hosted Slack bridge to **native Codex app-server sessions**.
+A small, self-hosted Slack bridge to native coding-agent sessions. Codex is the default and has the deepest integration; Claude Code is available through an experimental driver.
 
 - **Channel = project directory.** Bind `#controller` to `~/work` and project channels to their folders.
-- **Slack thread = Codex session.** A top-level message creates a session. Replies continue it, or steer its active turn.
-- Codex's completed assistant messages (including progress) appear in the same Slack thread.
+- **Slack thread = agent session.** A top-level message creates a session. Replies continue it, or steer its active turn.
+- Completed assistant messages appear in the same Slack thread.
 - Approvals have buttons. Codex questions have answer forms. `!stop` interrupts a turn; `!status` shows the session and latest answer. `!threads` discovers saved project threads and `!thread` connects one to Slack.
 - Slack shows “Codex is working…” during a turn, including between progress replies. The indicator refreshes every minute and clears on completion, interruption, disconnect, or shutdown. It uses the existing `chat:write` scope; no app reinstall is needed. Status API failures are logged without blocking replies.
 
@@ -13,7 +13,7 @@ No routing model, terminal scraping, private SDK imports, or edits to Codex's se
 ## Requirements
 
 - Node **24.14+** (uses built-in SQLite and TypeScript transformation for tests).
-- Codex CLI installed and logged in on this machine. Protocol baseline: **0.154.0**.
+- Either Codex CLI (protocol baseline **0.154.0**) or Claude Code CLI installed and logged in on this machine.
 - A Slack workspace where you can install a custom app.
 - An always-on machine for the daemon. Linux/systemd is the documented deployment.
 
@@ -73,7 +73,19 @@ This is local daemon configuration, **not** the Slack app manifest. Run `npm run
 
 The bridge resolves names to IDs internally and saves those bindings in `stateDir/identities.json`. Reusing an old handle or channel name cannot silently transfer control to a different person/channel. A renamed user/channel retains its binding while the configured name stays the same. Old configurations using `teamId`, `allowedUserIds`, and channel IDs still work.
 
-Optional fields: `stateDir` defaults to `~/.local/state/codex-slack`; `codexBin` defaults to `codex`. Set `codexBin` to an absolute executable path if your service cannot find Codex. Arguments and shell commands are not accepted there. `CODEX_SLACK_CONFIG` selects a different config file. Relative paths resolve against the daemon's working directory.
+Optional fields: `stateDir` defaults to `~/.local/state/codex-slack`. The agent defaults to `{"driver":"codex","command":"codex"}`. To use Claude Code, add:
+
+```json
+"agent": { "driver": "claude", "command": "claude" }
+```
+
+Set `command` to an absolute executable path when the service cannot find the CLI. Arguments and shell commands are not accepted. The older `codexBin` setting remains accepted when `agent` is omitted. `CODEX_SLACK_CONFIG` selects a different config file. Relative paths resolve against the daemon's working directory.
+
+### Agent drivers
+
+The Slack, persistence, scheduling, attachment, and recovery layers depend on the normalized interface in `src/agent.ts`, not on either CLI protocol. Drivers translate native lifecycle events into session/turn start, message, completion, interruption, and disconnect events, and advertise optional capabilities instead of making the bridge guess.
+
+The Codex driver retains app-server approvals, questions, saved-thread discovery, and native image inputs. The Claude driver uses Claude Code's documented streaming JSON CLI with resumable session IDs. It supports concurrent sessions, replies/steering, interruption, attachments as local file paths, status during the current daemon lifetime, and scheduled work. Claude's CLI does not currently expose the saved-session metadata this bridge needs for safe project-scoped `!threads`/`!thread`, so those commands report that the capability is unavailable. Permission prompts are not relayed to Slack: ordinary Claude sessions use `auto` mode with prompts disabled, while explicitly scheduled unattended runs use bypass mode, matching the scheduler's existing unattended trust model.
 
 You can also start with just `{"users":["@earonesty"]}` and choose directories in Slack. Invite the running bot to an unbound channel: it asks which directory to use, with a **Choose directory** button. Only configured users can open or submit the dialog; no separate admin role is needed. Enter an existing absolute path or `~/…` on the daemon's machine. The binding is saved in SQLite and survives restarts. Startup also checks already-joined channels for missed invitations. Use `!bind` if a prompt was lost. Messages sent before binding are not replayed into Codex.
 
@@ -153,11 +165,11 @@ Commands must be the entire message. Prefix another character if you want to dis
 
 Only configured users in the configured workspace/channels can send instructions or answer controls. Anyone in an allowed channel can read its replies; configure Slack membership accordingly. This is a personal/operator bridge, not a multi-tenant service.
 
-## Codex behavior
+## Agent behavior
 
-The daemon spawns one `codex app-server` and communicates over stdio. It initializes the protocol, creates/resumes threads, starts/steers/interrupts turns, and forwards server requests. It does not start another model to interpret Slack commands.
+With the default driver, the daemon spawns one `codex app-server` and communicates over stdio. The Claude driver starts a streaming `claude -p` subprocess for each live session and resumes its native session ID after a process or daemon restart. Neither driver starts another model to interpret Slack commands.
 
-Model, reasoning effort, instructions, and memory settings are inherited from your effective Codex configuration. Scheduled runs explicitly request `sandbox: "danger-full-access"` and `approvalPolicy: "never"`, giving unattended work full filesystem and network access without approval prompts. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Ordinary Slack sessions inherit Codex permissions. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
+Model, reasoning effort, instructions, and memory settings are inherited from the selected agent's effective configuration. Codex scheduled runs explicitly request `sandbox: "danger-full-access"` and `approvalPolicy: "never"`; Claude scheduled runs use `bypassPermissions`. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Ordinary sessions use the driver's normal permission policy. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
 
 Bindings and messages are stored in `stateDir/bridge.sqlite`. SQLite also provides a separate process lease so two daemons cannot use the same state directory. Run only one instance per Slack app token, even with different state directories. The state directory is private to your OS user and contains conversation text; it is not encrypted.
 

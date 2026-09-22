@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { KnownBlock, View } from '@slack/types';
 import { record } from './config.ts';
-import type { ServerRequest, Rpc } from './rpc.ts';
+import type { Agent } from './agent.ts';
+import type { ServerRequest } from './rpc.ts';
 import type { Binding, Store } from './store.ts';
 
 type Question = { id: string; question: string; options: string[] };
@@ -14,7 +15,7 @@ type Pending = {
 export class Interactions {
   private pending = new Map<string, Pending>();
   private items = new Map<string, { thread: string; turn: string; item: Record<string, unknown> }>();
-  constructor(private rpc: Rpc, private store: Store) {}
+  constructor(private rpc: Agent, private store: Store) {}
   observe(thread: string, turn: string, item: Record<string, unknown>): void {
     if (item.type === 'fileChange' || item.type === 'commandExecution') this.items.set(`${thread}:${String(item.id)}`, { thread, turn, item });
   }
@@ -54,7 +55,7 @@ export class Interactions {
       }
       this.pending.set(token, { ...base, kind: 'questions', questions });
       this.store.enqueue(binding.key, {
-        text: 'Codex has a question.',
+        text: `${this.rpc.name} has a question.`,
         blocks: [
           ...questions.map(q => ({ type: 'section', text: { type: 'plain_text', text: q.question } })),
           { type: 'actions', elements: [this.button('Answer', token, 'answer'), this.button('Cancel', token, 'cancel')] },
@@ -74,7 +75,7 @@ export class Interactions {
     } else if (request.method === 'mcpServer/elicitation/request') {
       // An explicit negative response is preferable to inventing an answer for an unknown form.
       this.rpc.respond(request.id, { action: 'decline', content: null });
-      this.store.enqueue(binding.key, { text: 'Codex requested an MCP form or URL confirmation. Version 0.1 does not render MCP elicitation forms, so this request was declined. Continue that operation in a native Codex client.' });
+      this.store.enqueue(binding.key, { text: `${this.rpc.name} requested an MCP form or URL confirmation. Version 0.1 does not render MCP elicitation forms, so this request was declined. Continue that operation in a native client.` });
       return;
     } else { this.unsupported(request, binding, `Unsupported interactive method: ${request.method}`); return; }
 
@@ -88,10 +89,10 @@ export class Interactions {
       this.unsupported(request, binding, 'Approval details are too large or have unsupported decisions; no approval was granted.'); return;
     }
     this.pending.set(token, { ...base, kind: 'approval', choices });
-    const blocks: KnownBlock[] = [{ type: 'section', text: { type: 'plain_text', text: 'Codex needs approval. Review the complete request below.' } }];
+    const blocks: KnownBlock[] = [{ type: 'section', text: { type: 'plain_text', text: `${this.rpc.name} needs approval. Review the complete request below.` } }];
     for (let offset = 0; offset < details.length; offset += 2800) blocks.push({ type: 'section', text: { type: 'plain_text', text: details.slice(offset, offset + 2800) } });
     blocks.push({ type: 'actions', elements: Object.keys(choices).map(choice => this.button(choice === 'accept' ? 'Approve once' : choice === 'decline' ? 'Decline' : 'Cancel turn', token, choice)) });
-    this.store.enqueue(binding.key, { text: 'Codex needs approval.', blocks });
+    this.store.enqueue(binding.key, { text: `${this.rpc.name} needs approval.`, blocks });
   }
   private unsupported(request: ServerRequest, binding: Binding, reason: string): void {
     this.rpc.reject(request.id, reason);
@@ -110,14 +111,14 @@ export class Interactions {
     else throw new Error('Invalid response for this request.');
     this.rpc.respond(pending.request.id, result);
     this.pending.delete(token);
-    this.store.enqueue(pending.binding.key, { text: `Response sent to Codex: ${action}.` });
+    this.store.enqueue(pending.binding.key, { text: `Response sent to ${this.rpc.name}: ${action}.` });
   }
   modal(token: string): View {
     const pending = this.pending.get(token);
     if (!pending?.questions) throw new Error('This question has expired.');
     return {
       type: 'modal', callback_id: 'cs:answers', private_metadata: token,
-      title: { type: 'plain_text', text: 'Answer Codex' },
+      title: { type: 'plain_text', text: `Answer ${this.rpc.name}` },
       submit: { type: 'plain_text', text: 'Send' }, close: { type: 'plain_text', text: 'Close' },
       blocks: pending.questions.flatMap((q, i): KnownBlock[] => [
         { type: 'section', text: { type: 'plain_text', text: [q.question, ...q.options].join('\n') } },
@@ -137,6 +138,6 @@ export class Interactions {
     });
     this.rpc.respond(pending.request.id, { answers });
     this.pending.delete(token);
-    this.store.enqueue(pending.binding.key, { text: 'Your answers were sent to Codex.' });
+    this.store.enqueue(pending.binding.key, { text: `Your answers were sent to ${this.rpc.name}.` });
   }
 }
