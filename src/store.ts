@@ -154,7 +154,7 @@ export class Store {
       const choice = this.db.prepare('SELECT * FROM thread_choices WHERE token=?').get(token) as ThreadChoice | undefined;
       if (!choice) throw new Error('This thread choice has expired. Run !threads again.');
       const changed = this.db.prepare('UPDATE bindings SET thread=? WHERE key=? AND thread IS NULL').run(choice.thread, choice.key).changes;
-      if (!changed) throw new Error('This Slack conversation is already connected to a Codex thread.');
+      if (!changed) throw new Error('This Slack conversation is already connected to an agent session.');
       this.db.prepare('DELETE FROM thread_choices WHERE key=?').run(choice.key);
       const binding = this.get(choice.key)!;
       this.db.exec('COMMIT');
@@ -195,12 +195,12 @@ export class Store {
   deliveryStatus(id: string, status: 'sending' | 'sent' | 'failed'): void {
     this.db.prepare('UPDATE outbox SET status=? WHERE id=?').run(status, id);
   }
-  recover(): void {
+  recover(agent = 'Codex'): void {
     // A crash after dispatch may have run tools. Never automatically replay it.
     const messages = this.db.prepare("SELECT id,key FROM inbox WHERE status='dispatching'").all();
     for (const message of messages) {
       this.mark(String(message.id), 'uncertain');
-      this.enqueue(String(message.key), { text: 'The bridge restarted during message delivery. The last instruction may have reached Codex; it has not been resent. Send `!status` to check the session before continuing.' });
+      this.enqueue(String(message.key), { text: `The bridge restarted during message delivery. The last instruction may have reached ${agent}; it has not been resent. Send \`!status\` to check the session before continuing.` });
     }
     const outputs = this.db.prepare("SELECT id,key FROM outbox WHERE status='sending'").all();
     for (const output of outputs) {

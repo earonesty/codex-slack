@@ -2,9 +2,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { record } from './config.ts';
+import { AgentError } from './agent.ts';
 
 export type ServerRequest = { id: string | number; method: string; params: Record<string, unknown> };
-export class RpcError extends Error {
+export class RpcError extends AgentError {
   constructor(message: string, readonly code: number) { super(message); }
 }
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };

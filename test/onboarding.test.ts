@@ -9,7 +9,7 @@ import { allowedDirectory, authorized, parseConfig, type Config } from '../src/c
 import { resolveSettings } from '../src/discovery.ts';
 
 function fixture() {
-  const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: {}, stateDir: tmpdir(), codexBin: 'codex' };
+  const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: {}, stateDir: tmpdir(), agent: { driver: 'codex', command: 'codex' } };
   const store = new Store(':memory:');
   const posts: string[] = [];
   const onboarding = new Onboarding(config, store, async channel => { posts.push(channel); });
@@ -78,7 +78,7 @@ test('unbound authorized messages are consumed, and !bind recovers a failed prom
 
 test('pending controls and directory bindings survive restart; saved decisions override manual config', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'codex-slack-onboarding-'));
-  const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: {}, stateDir: dir, codexBin: 'codex' };
+  const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: {}, stateDir: dir, agent: { driver: 'codex', command: 'codex' } };
   let store = new Store(path.join(dir, 'bridge.sqlite'));
   const posts: string[] = [];
   const post = async (channel: string) => { posts.push(channel); };
@@ -126,7 +126,7 @@ test('confirmed transfer disables old sessions and queued work and persists the 
   const dir = mkdtempSync(path.join(tmpdir(), 'codex-slack-transfer-'));
   const child = path.join(dir, 'child'); mkdirSync(child);
   let store = new Store(path.join(dir, 'state.sqlite'));
-  const config: Config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { COLD: { cwd: dir }, CCHILD: { cwd: child } }, stateDir: dir, codexBin: 'unused' };
+  const config: Config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { COLD: { cwd: dir }, CCHILD: { cwd: child } }, stateDir: dir, agent: { driver: 'codex', command: 'unused' } };
   const disabled: string[][] = [];
   try {
     const onboarding = new Onboarding(config, store, async () => {}, channels => { disabled.push(channels); });

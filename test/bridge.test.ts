@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Rpc, RpcError } from '../src/rpc.ts';
 import { Codex } from '../src/codex.ts';
+import { Claude } from '../src/claude.ts';
 import { Store, type Incoming } from '../src/store.ts';
 import { Bridge } from '../src/bridge.ts';
 import { authorized, parseConfig, type Config } from '../src/config.ts';
@@ -16,7 +17,7 @@ import { chunks } from '../src/messages.ts';
 import { Onboarding } from '../src/onboarding.ts';
 
 const fake = fileURLToPath(new URL('./fake-codex.mjs', import.meta.url));
-const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', codexBin: 'unused' };
+const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', agent: { driver: 'codex', command: 'unused' } };
 const incoming = (id = 'T123:C123:1.1'): Incoming => ({ id, user: 'U123', key: 'T123:C123:1.1', channel: 'C123', root: '1.1', cwd: tmpdir(), thread: null, text: 'hello', unsupported: false });
 
 async function until(predicate: () => boolean): Promise<void> {
@@ -33,6 +34,10 @@ test('configuration requires a workspace, explicit users, channel IDs, and exist
   assert.equal(authorized(valid, 'Tother', 'U123', 'C123'), false);
   assert.equal(authorized(valid, 'T123', 'Uother', 'C123'), false);
   assert.equal(authorized(valid, 'T123', 'U123', 'Cother'), false);
+  assert.deepEqual(parseConfig({ ...config, agent: { driver: 'claude', command: '/opt/claude' } }).agent,
+    { driver: 'claude', command: '/opt/claude' });
+  assert.equal(parseConfig({ ...config, agent: undefined, codexBin: '/opt/codex' }).agent.command, '/opt/codex');
+  for (const agent of [null, 'claude', []]) assert.throws(() => parseConfig({ ...config, agent }), /Invalid agent/);
 });
 
 test('message chunks preserve Unicode without dropping or splitting surrogate pairs', () => {
@@ -298,6 +303,17 @@ test('idle stop and status commands never create a model session', async t => {
   assert.equal(outputs[0], 'No active turn to interrupt.');
   assert.match(outputs[1]!, /^No Codex session yet/);
   assert.equal(store.get('T123:C123:1.1')!.thread, null);
+});
+
+test('drivers without discovery reject both thread discovery commands without native reads', async t => {
+  const store = new Store(':memory:'); const outputs: string[] = [];
+  const local = { ...config, agent: { driver: 'claude' as const, command: 'unused' } };
+  const bridge = new Bridge(local, store, new Claude('/must-not-start'), async (_, message) => { outputs.push(message.text); });
+  t.after(async () => { await bridge.stop(); store.close(); });
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '1.1', text: '!threads' });
+  bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '2.1', text: '!thread 00000000-0000-0000-0000-000000000000' });
+  await until(() => outputs.length === 2);
+  assert.ok(outputs.every(text => text === 'Claude session discovery is not available through this driver.'));
 });
 
 test('!threads offers project-scoped buttons that connect an unbound Slack conversation', async t => {

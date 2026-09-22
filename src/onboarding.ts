@@ -7,9 +7,11 @@ import { Store, type ChannelSetup } from './store.ts';
 
 export class Onboarding {
   private confirmations = new Map<string, { token: string; team: unknown; user: unknown; cwd: string; displaced: string[]; expires: number }>();
+  private readonly agentName: string;
   constructor(private config: Config, private store: Store,
     private post: (channel: string, message: Message) => Promise<void>,
     private displaced: (channels: string[]) => void = () => {}) {
+    this.agentName = config.agent.driver === 'claude' ? 'Claude' : 'Codex';
     const overrides = store.overrides(config.teamId);
     for (const saved of overrides) delete config.channels[saved.channel];
     for (const saved of overrides) if (saved.cwd) {
@@ -51,7 +53,7 @@ export class Onboarding {
       || typeof channel !== 'string' || !/^[CG][A-Z0-9]+$/.test(channel)) return false;
     if (typeof event.text === 'string' && event.text.trim() === '!bind') {
       if (Object.hasOwn(this.config.channels, channel)) {
-        await this.post(channel, { text: 'This channel is already bound. Send a new top-level message to start a Codex session.' });
+        await this.post(channel, { text: `This channel is already bound. Send a new top-level message to start a ${this.agentName} session.` });
         return true;
       }
       const setup = this.store.ensureChannelSetup(String(team), channel);
@@ -64,7 +66,7 @@ export class Onboarding {
     }
     if (!Object.hasOwn(this.config.channels, channel)) {
       await this.ask(team, channel);
-      return true; // No Codex input until the directory is chosen; do not replay this text.
+      return true; // No agent input until the directory is chosen; do not replay this text.
     }
     return false;
   }
@@ -73,7 +75,7 @@ export class Onboarding {
     return {
       text: 'Which directory should I use for this channel?',
       blocks: [
-        { type: 'section', text: { type: 'plain_text', text: 'Which directory should I use for this channel? An allowed user can choose a folder on the machine running Codex.' } },
+        { type: 'section', text: { type: 'plain_text', text: `Which directory should I use for this channel? An allowed user can choose a folder on the machine running ${this.agentName}.` } },
         { type: 'actions', elements: [{ type: 'button', action_id: 'bind:open', value: token, text: { type: 'plain_text', text: 'Choose directory' } }] },
       ],
     };
@@ -90,7 +92,7 @@ export class Onboarding {
     return {
       type: 'modal', callback_id: 'bind:directory', private_metadata: token,
       title: { type: 'plain_text', text: 'Bind this channel' }, submit: { type: 'plain_text', text: 'Bind' }, close: { type: 'plain_text', text: 'Cancel' },
-      blocks: [{ type: 'input', block_id: 'directory', label: { type: 'plain_text', text: 'Directory on the Codex machine' },
+      blocks: [{ type: 'input', block_id: 'directory', label: { type: 'plain_text', text: `Directory on the ${this.agentName} machine` },
         hint: { type: 'plain_text', text: 'An existing folder, for example ~/work/projects/dirtsignal' },
         element: { type: 'plain_text_input', action_id: 'path', max_length: 2000 } }],
     };
@@ -140,11 +142,11 @@ export class Onboarding {
     return { channel: setup.channel, cwd };
   }
   private directory(folder: string): string {
-    if (!path.isAbsolute(folder) && folder !== '~' && !folder.startsWith('~/')) throw new Error('Use an absolute path or a path starting with ~/ on the Codex machine.');
+    if (!path.isAbsolute(folder) && folder !== '~' && !folder.startsWith('~/')) throw new Error(`Use an absolute path or a path starting with ~/ on the ${this.agentName} machine.`);
     try { return allowedDirectory(this.config.root, folder); }
     catch (error) {
       if (error instanceof Error && error.message.includes('configured root')) throw error;
-      throw new Error('That directory does not exist on the Codex machine. Create it first, then try again.');
+      throw new Error(`That directory does not exist on the ${this.agentName} machine. Create it first, then try again.`);
     }
   }
 }
