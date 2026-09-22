@@ -42,6 +42,7 @@ export function parseConfig(value: unknown): Config {
     channels[id] = { cwd: resolved };
   }
   if (raw.stateDir !== undefined && (typeof raw.stateDir !== 'string' || !raw.stateDir.trim())) throw new Error('Invalid stateDir');
+  if (raw.agent !== undefined && (typeof raw.agent !== 'object' || raw.agent === null || Array.isArray(raw.agent))) throw new Error('Invalid agent');
   const agentRaw = record(raw.agent);
   const driver = agentRaw.driver ?? 'codex';
   if (driver !== 'codex' && driver !== 'claude') throw new Error('agent.driver must be codex or claude');

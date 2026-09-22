@@ -148,6 +148,7 @@ export class Bridge {
       } else if (!message.files?.length && message.text.trim() === '!threads') {
         await this.listThreads(binding);
       } else if (!message.files?.length && /^!thread(?:\s|$)/.test(message.text.trim())) {
+        if (!this.agent.capabilities.threadDiscovery) throw new ThreadCommandError(`${this.agent.name} session discovery is not available through this driver.`);
         const thread = message.text.trim().slice('!thread'.length).trim();
         if (!thread) throw new ThreadCommandError('Usage: !thread <UUID>');
         await this.connectThread(binding, thread);

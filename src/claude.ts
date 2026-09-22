@@ -6,7 +6,17 @@ import type { LocalAttachment } from './attachments.ts';
 import { record } from './config.ts';
 
 const execute = promisify(execFile);
-type Session = { child: ChildProcessWithoutNullStreams; cwd: string; buffer: string; turn?: string; stopped?: boolean };
+type Session = {
+  child: ChildProcessWithoutNullStreams;
+  cwd: string;
+  buffer: string;
+  turn?: string;
+  stopped?: boolean;
+  closing: boolean;
+  closed: boolean;
+  termination: Promise<void>;
+  resolveTermination: () => void;
+};
 
 /** Claude Code's documented streaming CLI adapted to the bridge turn contract. */
 export class Claude extends Agent {
@@ -47,7 +57,9 @@ export class Claude extends Agent {
   }
   async input(thread: string, cwd: string, text: string, files: LocalAttachment[] = []): Promise<void> {
     await this.resume(thread, cwd);
-    const session = this.sessions.get(thread) ?? this.launch(thread, cwd);
+    let session = this.sessions.get(thread);
+    if (session?.closing) { await session.termination; session = undefined; }
+    session ??= this.launch(thread, cwd);
     const descriptions = files.length ? '\n\nAttached files (local copies; read them as needed):\n'
       + files.map(file => `- ${JSON.stringify(file.name)}: ${JSON.stringify(file.path)}`).join('\n') : '';
     const prompt = (text.trim() ? text : 'Please inspect the attached files.') + descriptions;
@@ -64,8 +76,10 @@ export class Claude extends Agent {
   async interrupt(thread: string): Promise<boolean> {
     const session = this.sessions.get(thread); const turn = this.active.get(thread);
     if (!session || !turn) return false;
-    session.stopped = true; session.child.kill('SIGINT');
+    session.stopped = true; session.closing = true;
     this.complete(thread, session, 'interrupted');
+    session.child.kill('SIGINT');
+    await this.ensureTermination(thread, session);
     return true;
   }
   async status(thread: string, cwd?: string): Promise<string> {
@@ -83,28 +97,28 @@ export class Claude extends Agent {
     if (this.unattended.has(thread)) args.push('--dangerously-skip-permissions');
     if (this.fresh.delete(thread)) args.push('--session-id', thread); else args.push('--resume', thread);
     const child = spawn(this.command, [...this.commandArgs, ...args], { cwd, stdio: 'pipe', env: process.env });
-    const session: Session = { child, cwd, buffer: '' };
+    let resolveTermination!: () => void;
+    const termination = new Promise<void>(resolve => { resolveTermination = resolve; });
+    const session: Session = { child, cwd, buffer: '', closing: false, closed: false, termination, resolveTermination };
     this.sessions.set(thread, session);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => this.output(thread, session, chunk));
     child.stderr.resume();
-    child.on('error', () => this.failed(thread, session));
-    child.on('exit', () => {
-      if (this.sessions.get(thread) === session) this.sessions.delete(thread);
-      if (session.turn && !session.stopped) this.complete(thread, session, 'failed');
-    });
+    child.stdin.on('error', () => this.failSession(thread, session));
+    child.on('error', () => this.processClosed(thread, session, true));
+    child.on('close', () => this.processClosed(thread, session, true));
     return session;
   }
   private output(thread: string, session: Session, chunk: string): void {
     if (this.sessions.get(thread) !== session) return;
     session.buffer += chunk;
-    if (Buffer.byteLength(session.buffer) > 32 * 1024 * 1024) return this.failed(thread, session);
+    if (Buffer.byteLength(session.buffer) > 32 * 1024 * 1024) return this.failSession(thread, session);
     let end: number;
     while ((end = session.buffer.indexOf('\n')) >= 0) {
       const line = session.buffer.slice(0, end); session.buffer = session.buffer.slice(end + 1);
       if (!line.trim()) continue;
       let message: Record<string, unknown>;
-      try { message = record(JSON.parse(line)); } catch { return this.failed(thread, session); }
+      try { message = record(JSON.parse(line)); } catch { return this.failSession(thread, session); }
       if (message.type !== 'result' || !session.turn) continue;
       const text = typeof message.result === 'string' ? message.result : '';
       if (text) {
@@ -113,11 +127,34 @@ export class Claude extends Agent {
           item: { id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text } });
       }
       this.complete(thread, session, message.is_error === true ? 'failed' : 'completed');
+      if (this.unattended.delete(thread)) {
+        session.stopped = true; session.closing = true; session.child.kill('SIGTERM');
+        void this.ensureTermination(thread, session);
+      }
     }
   }
-  private failed(thread: string, session: Session): void {
+  private failSession(thread: string, session: Session): void {
+    if (session.closed || session.closing) return;
+    session.closing = true;
     if (session.turn) this.complete(thread, session, 'failed');
-    session.child.kill();
+    session.child.kill('SIGTERM');
+    void this.ensureTermination(thread, session);
+  }
+  private processClosed(thread: string, session: Session, failed: boolean): void {
+    if (session.closed) return;
+    session.closed = true;
+    if (failed && session.turn && !session.stopped) this.complete(thread, session, 'failed');
+    if (this.sessions.get(thread) === session) this.sessions.delete(thread);
+    this.unattended.delete(thread);
+    session.resolveTermination();
+  }
+  private async ensureTermination(thread: string, session: Session): Promise<void> {
+    if (session.closed) return;
+    await Promise.race([session.termination, new Promise<void>(resolve => setTimeout(resolve, 5_000))]);
+    if (session.closed) return;
+    session.child.kill('SIGKILL');
+    await Promise.race([session.termination, new Promise<void>(resolve => setTimeout(resolve, 1_000))]);
+    if (!session.closed) this.processClosed(thread, session, true);
   }
   private complete(thread: string, session: Session, status: 'completed' | 'failed' | 'interrupted'): void {
     const turn = session.turn;
@@ -127,8 +164,11 @@ export class Claude extends Agent {
     this.emit('notification', 'turn/completed', { threadId: thread, turn: { id: turn, status } });
   }
   close(): void {
-    for (const session of this.sessions.values()) { session.stopped = true; session.child.kill(); }
-    this.sessions.clear(); this.active.clear();
+    for (const [thread, session] of this.sessions) {
+      session.stopped = true; session.closing = true; session.child.kill();
+      this.processClosed(thread, session, false);
+    }
+    this.active.clear();
     this.emit('disconnect', new AgentError('Bridge stopped'));
   }
 }

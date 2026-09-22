@@ -6,8 +6,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Claude } from '../src/claude.ts';
 
 const fake = fileURLToPath(new URL('./fake-claude.mjs', import.meta.url));
-async function until(predicate: () => boolean): Promise<void> {
-  for (let i = 0; i < 300; i++) { if (predicate()) return; await sleep(10); }
+async function until(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 300; i++) { if (await predicate()) return; await sleep(10); }
   assert.fail('Timed out waiting for Claude driver condition');
 }
 
@@ -21,13 +21,13 @@ test('Claude driver checks auth and translates streaming results into normalized
   await claude.input(session, tmpdir(), 'hello');
   await until(() => events.some(event => event.method === 'turn/completed'));
   assert.deepEqual(events.map(event => event.method), ['turn/started', 'item/completed', 'turn/completed']);
-  assert.match(await claude.status(session, tmpdir()), /Latest answer:\nClaude reply: hello/);
+  assert.match(await claude.status(session, tmpdir()), /Latest answer:\nClaude auto reply: hello/);
   assert.equal(claude.active.size, 0);
 
   events.length = 0;
   await claude.input(session, tmpdir(), 'again');
   await until(() => events.some(event => event.method === 'turn/completed'));
-  assert.equal(String((events.find(event => event.method === 'item/completed')?.params.item as { text: string }).text), 'Claude reply: again');
+  assert.equal(String((events.find(event => event.method === 'item/completed')?.params.item as { text: string }).text), 'Claude auto reply: again');
 });
 
 test('Claude driver interrupts an active streamed turn', async t => {
@@ -42,4 +42,37 @@ test('Claude driver interrupts an active streamed turn', async t => {
   assert.equal(await claude.interrupt(session), true);
   assert.deepEqual(completed, ['interrupted']);
   assert.equal(claude.active.size, 0);
+  await claude.input(session, tmpdir(), 'after interrupt');
+  await until(async () => (await claude.status(session, tmpdir())).includes('Claude auto reply: after interrupt'));
+});
+
+test('Claude drops unattended permissions before a human follow-up', async t => {
+  const claude = new Claude(process.execPath, [fake]);
+  t.after(() => claude.close());
+  const session = await claude.create(tmpdir(), { unattended: true });
+  const answers: string[] = [];
+  claude.on('notification', (method, params) => {
+    const item = params.item as { text?: string } | undefined;
+    if (method === 'item/completed' && item?.text) answers.push(item.text);
+  });
+  await claude.input(session, tmpdir(), 'scheduled');
+  await until(() => answers.length === 1);
+  await claude.input(session, tmpdir(), 'human follow-up');
+  await until(() => answers.length === 2);
+  assert.deepEqual(answers, ['Claude bypass reply: scheduled', 'Claude auto reply: human follow-up']);
+});
+
+test('Claude recovers after the subprocess closes during input', async t => {
+  const claude = new Claude(process.execPath, [fake]);
+  t.after(() => claude.close());
+  const session = await claude.create(tmpdir());
+  const statuses: string[] = [];
+  claude.on('notification', (method, params) => {
+    if (method === 'turn/completed') statuses.push(String((params.turn as { status: string }).status));
+  });
+  await claude.input(session, tmpdir(), 'exit');
+  await until(() => statuses.includes('failed'));
+  await claude.input(session, tmpdir(), 'recovered');
+  await until(async () => (await claude.status(session, tmpdir())).includes('Claude auto reply: recovered'));
+  assert.deepEqual(statuses, ['failed', 'completed']);
 });
