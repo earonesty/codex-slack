@@ -2,7 +2,7 @@ import { Attachments } from './attachments.ts';
 import { mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { App } from '@slack/bolt';
+import { App, SocketModeReceiver } from '@slack/bolt';
 import { WebClient } from '@slack/web-api';
 import { authorized, record } from './config.ts';
 import { botToken, discover, loadResolvedConfig } from './discovery.ts';
@@ -46,7 +46,18 @@ async function main(): Promise<void> {
   try { lease.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE;'); }
   catch { lease.close(); throw new Error('Another bridge is already using this stateDir'); }
   const store = new Store(path.join(config.stateDir, 'bridge.sqlite'));
-  const app = new App({ token, appToken, socketMode: true,
+  // Outbound writes intentionally do not retry because their outcome can be ambiguous.
+  // Socket URL discovery is read-only and must tolerate ordinary network outages.
+  const receiver = new SocketModeReceiver({
+    appToken,
+    clientPingTimeout: 15_000,
+    serverPingTimeout: 60_000,
+    installerOptions: { clientOptions: {
+      retryConfig: { retries: 100, factor: 1.3, minTimeout: 1_000, maxTimeout: 30_000, randomize: true },
+      timeout: 10_000,
+    } },
+  });
+  const app = new App({ token, receiver, socketMode: true,
     clientOptions: { retryConfig: { retries: 0 }, rejectRateLimitedCalls: true, timeout: 10_000 } });
   const attachments = new Attachments(path.join(config.stateDir, 'attachments'), token, id => app.client.files.info({ file: id }));
   const bridge = new Bridge(config, store, agent, async (binding, message) => {

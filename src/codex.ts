@@ -9,18 +9,40 @@ export class Codex extends Agent {
   readonly name = 'Codex';
   readonly capabilities = { threadDiscovery: true, interactiveRequests: true };
   private loaded = new Set<string>();
+  private recycleTimer?: NodeJS.Timeout;
   readonly active = new Map<string, string>();
-  constructor(readonly rpc: Rpc) {
+  constructor(readonly rpc: Rpc, private idleRecycleMs = 60_000) {
     super();
-    rpc.on('disconnect', () => { this.loaded.clear(); this.active.clear(); });
+    rpc.on('disconnect', () => {
+      if (this.recycleTimer) clearTimeout(this.recycleTimer);
+      this.recycleTimer = undefined;
+      this.loaded.clear(); this.active.clear();
+    });
     rpc.on('notification', (method: string, params: Record<string, unknown>) => {
       const thread = String(params.threadId ?? '');
-      if (method === 'turn/started') this.active.set(thread, String(record(params.turn).id));
-      if (method === 'turn/completed' && this.active.get(thread) === record(params.turn).id) this.active.delete(thread);
+      if (method === 'turn/started') {
+        if (this.recycleTimer) clearTimeout(this.recycleTimer);
+        this.recycleTimer = undefined;
+        this.active.set(thread, String(record(params.turn).id));
+      }
+      if (method === 'turn/completed' && this.active.get(thread) === record(params.turn).id) {
+        this.active.delete(thread);
+        if (!this.active.size) this.scheduleRecycle();
+      }
     });
     rpc.on('notification', (method, params) => this.emit('notification', method, params));
     rpc.on('request', request => this.emit('request', request));
     rpc.on('disconnect', error => this.emit('disconnect', error));
+  }
+  private scheduleRecycle(): void {
+    if (this.recycleTimer) clearTimeout(this.recycleTimer);
+    this.recycleTimer = setTimeout(() => {
+      this.recycleTimer = undefined;
+      if (this.active.size || this.rpc.recycle()) return;
+      // A short non-turn request overlapped the timer. Try again once it settles.
+      this.scheduleRecycle();
+    }, this.idleRecycleMs);
+    this.recycleTimer.unref();
   }
   start(): Promise<void> { return this.rpc.start(); }
   async check(): Promise<void> {
@@ -28,7 +50,11 @@ export class Codex extends Agent {
     const account = record(record(await this.rpc.request('account/read', {})).account);
     if (!Object.keys(account).length) throw new Error('Codex is not logged in. Run codex login first.');
   }
-  close(): void { this.rpc.close(); }
+  close(): void {
+    if (this.recycleTimer) clearTimeout(this.recycleTimer);
+    this.recycleTimer = undefined;
+    this.rpc.close();
+  }
   respond(id: string | number, result: unknown): void { this.rpc.respond(id, result); }
   reject(id: string | number, message: string): void { this.rpc.reject(id, message); }
   async create(cwd: string, options: { unattended?: boolean } = {}): Promise<string> {

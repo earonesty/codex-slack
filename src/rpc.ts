@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { record } from './config.ts';
 import { AgentError } from './agent.ts';
+import { detachedProcessGroup, killProcessTree } from './process-tree.ts';
 
 export type ServerRequest = { id: string | number; method: string; params: Record<string, unknown> };
 export class RpcError extends AgentError {
@@ -25,7 +26,7 @@ export class Rpc extends EventEmitter {
     return this.starting;
   }
   private async connect(): Promise<void> {
-    const child = spawn(this.command, this.args, { stdio: 'pipe', env: process.env });
+    const child = spawn(this.command, this.args, { stdio: 'pipe', env: process.env, detached: detachedProcessGroup });
     this.child = child;
     this.epoch = randomUUID();
     let buffer = '';
@@ -90,8 +91,14 @@ export class Rpc extends EventEmitter {
     if (!child || child !== this.child) return;
     this.child = undefined; this.starting = undefined;
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
-    this.pending.clear(); child.kill();
+    this.pending.clear(); killProcessTree(child);
     this.emit('disconnect', error);
+  }
+  /** Recycle an idle app-server so completed turns cannot accumulate helper processes. */
+  recycle(): boolean {
+    if (this.pending.size) return false;
+    this.disconnect(new Error('Codex app-server recycled after becoming idle'));
+    return true;
   }
   close(): void { this.disconnect(new Error('Bridge stopped')); }
 }

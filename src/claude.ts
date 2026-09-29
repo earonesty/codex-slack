@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { Agent, AgentError, type AgentThread } from './agent.ts';
 import type { LocalAttachment } from './attachments.ts';
 import { record } from './config.ts';
+import { detachedProcessGroup, killProcessTree } from './process-tree.ts';
 
 const execute = promisify(execFile);
 type Session = {
@@ -78,7 +79,7 @@ export class Claude extends Agent {
     if (!session || !turn) return false;
     session.stopped = true; session.closing = true;
     this.complete(thread, session, 'interrupted');
-    session.child.kill('SIGINT');
+    killProcessTree(session.child, 'SIGINT');
     await this.ensureTermination(thread, session);
     return true;
   }
@@ -96,7 +97,9 @@ export class Claude extends Agent {
       '--permission-prompts', 'none', '--permission-mode', this.unattended.has(thread) ? 'bypassPermissions' : 'auto'];
     if (this.unattended.has(thread)) args.push('--dangerously-skip-permissions');
     if (this.fresh.delete(thread)) args.push('--session-id', thread); else args.push('--resume', thread);
-    const child = spawn(this.command, [...this.commandArgs, ...args], { cwd, stdio: 'pipe', env: process.env });
+    const child = spawn(this.command, [...this.commandArgs, ...args], {
+      cwd, stdio: 'pipe', env: process.env, detached: detachedProcessGroup,
+    });
     let resolveTermination!: () => void;
     const termination = new Promise<void>(resolve => { resolveTermination = resolve; });
     const session: Session = { child, cwd, buffer: '', closing: false, closed: false, termination, resolveTermination };
@@ -128,7 +131,7 @@ export class Claude extends Agent {
       }
       this.complete(thread, session, message.is_error === true ? 'failed' : 'completed');
       if (this.unattended.delete(thread)) {
-        session.stopped = true; session.closing = true; session.child.kill('SIGTERM');
+        session.stopped = true; session.closing = true; killProcessTree(session.child, 'SIGTERM');
         void this.ensureTermination(thread, session);
       }
     }
@@ -137,7 +140,7 @@ export class Claude extends Agent {
     if (session.closed || session.closing) return;
     session.closing = true;
     if (session.turn) this.complete(thread, session, 'failed');
-    session.child.kill('SIGTERM');
+    killProcessTree(session.child, 'SIGTERM');
     void this.ensureTermination(thread, session);
   }
   private processClosed(thread: string, session: Session, failed: boolean): void {
@@ -152,7 +155,7 @@ export class Claude extends Agent {
     if (session.closed) return;
     await Promise.race([session.termination, new Promise<void>(resolve => setTimeout(resolve, 5_000))]);
     if (session.closed) return;
-    session.child.kill('SIGKILL');
+    killProcessTree(session.child, 'SIGKILL');
     await Promise.race([session.termination, new Promise<void>(resolve => setTimeout(resolve, 1_000))]);
     if (!session.closed) this.processClosed(thread, session, true);
   }
@@ -165,7 +168,7 @@ export class Claude extends Agent {
   }
   close(): void {
     for (const [thread, session] of this.sessions) {
-      session.stopped = true; session.closing = true; session.child.kill();
+      session.stopped = true; session.closing = true; killProcessTree(session.child);
       this.processClosed(thread, session, false);
     }
     this.active.clear();

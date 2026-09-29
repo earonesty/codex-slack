@@ -167,7 +167,7 @@ Only configured users in the configured workspace/channels can send instructions
 
 ## Agent behavior
 
-With the default driver, the daemon spawns one `codex app-server` and communicates over stdio. The Claude driver starts a streaming `claude -p` subprocess for each live session and resumes its native session ID after a process or daemon restart. Neither driver starts another model to interpret Slack commands.
+With the default driver, the daemon spawns `codex app-server` and communicates over stdio. After all turns have been idle for a minute, it recycles that process and its helper process group; the next input transparently resumes the saved session through a fresh app-server. This bounds resources left by completed tool calls. The Claude driver starts a streaming `claude -p` subprocess for each live session and resumes its native session ID after a process or daemon restart. Neither driver starts another model to interpret Slack commands.
 
 Model, reasoning effort, instructions, and memory settings are inherited from the selected agent's effective configuration. Codex scheduled runs explicitly request `sandbox: "danger-full-access"` and `approvalPolicy: "never"`; Claude scheduled runs use `bypassPermissions`. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Ordinary sessions use the driver's normal permission policy. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
 
@@ -176,6 +176,7 @@ Bindings and messages are stored in `stateDir/bridge.sqlite`. SQLite also provid
 ## Delivery and recovery
 
 - Incoming Slack messages are deduplicated by workspace/channel/message timestamp and journaled before Codex dispatch.
+- Socket Mode URL discovery retries transient network failures independently from outbound message delivery. Heartbeat timeouts reconnect automatically; outbound Slack writes remain single-attempt because retrying an ambiguous write can duplicate a reply.
 - Dispatch is serialized per Slack thread; independent threads can run concurrently. Serialization covers the protocol acknowledgement, not the whole model turn, so follow-ups can steer ongoing work.
 - Replies are journaled before Slack delivery and deduplicated by Codex thread/turn/item IDs.
 - Unsent queued inputs resume on restart. Inputs interrupted during dispatch are marked uncertain and **never automatically replayed**: they might already have run tools.
