@@ -2,6 +2,7 @@ import { AttachmentError, type Attachment, type LocalAttachment } from './attach
 import type { Config } from './config.ts';
 import { allowedDirectory, authorized, record } from './config.ts';
 import { Agent, AgentError } from './agent.ts';
+import { turnError } from './turn-error.ts';
 import { Interactions } from './interactions.ts';
 import { chunks, textMessage, type Message } from './messages.ts';
 import type { ServerRequest } from './rpc.ts';
@@ -273,7 +274,7 @@ export class Bridge {
       const turn = record(params.turn);
       this.interactions.clear(thread, String(turn.id));
       if (turn.status === 'failed' || turn.status === 'interrupted') {
-        this.say(binding.key, turn.status === 'failed' ? `${this.agent.name} turn failed. Use !status to inspect the session.` : `${this.agent.name} turn interrupted.`, `${thread}:${String(turn.id)}:status`);
+        this.say(binding.key, turn.status === 'failed' ? `${this.agent.name} turn failed. ${turnError(turn).summary} Use !status to inspect the session.` : `${this.agent.name} turn interrupted.`, `${thread}:${String(turn.id)}:status`);
       }
     }
     void this.flush();

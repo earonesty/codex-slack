@@ -88,7 +88,10 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       : task === 'empty' ? '' : task === 'mixed-silent' ? '[SILENT] but a refund failed' : `Reply: ${text}`;
     const item = { id: `item-${sequence}`, type: 'agentMessage', phase: 'final_answer', text: answer };
     turn.items.push(item); turn.status = 'completed'; thread.status = { type: 'idle' };
-    if (task === 'fail-silent') turn.status = 'failed';
+    if (task === 'fail-silent') {
+      turn.status = 'failed';
+      turn.error = { message: 'Private diagnostic: secret-test-token', codexErrorInfo: 'other' };
+    }
     // Two notifications in the same stdout chunk exercise normal event/ack ordering.
     notify('item/completed', { threadId: thread.id, turnId: turn.id, item });
     notify('item/completed', { threadId: thread.id, turnId: turn.id, item });

@@ -292,6 +292,8 @@ test('failure cannot be hidden by a silent final answer', async t => {
   const run = await f.scheduler.launch(f.scheduler.put({ ...f.job, prompt: 'fail-silent' }));
   await until(() => f.outputs.some(o => o.text.includes('turn failed')));
   assert.equal(f.roots.length, 1); assert.equal(f.db.run(run.id)?.status, 'failed');
+  assert.equal(f.db.run(run.id)?.error, 'Private diagnostic: secret-test-token');
+  assert.ok(!f.outputs.some(o => o.text.includes('secret-test-token')));
   assert.ok(!f.outputs.some(o => o.text.trim() === '[SILENT]'));
 });
 

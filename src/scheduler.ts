@@ -4,6 +4,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { allowedDirectory, record } from './config.ts';
 import type { Bridge } from './bridge.ts';
 import { AgentError } from './agent.ts';
+import { turnError } from './turn-error.ts';
 import { ScheduleStore, type Job, type Run } from './schedule-store.ts';
 
 export function nextOccurrence(cron: string, timezone: string, after: number): number {
@@ -233,7 +234,13 @@ export class Scheduler {
       }
     }
     if (method === 'turn/completed') {
-      const status = record(params.turn).status;
+      const turn = record(params.turn);
+      const status = turn.status;
+      if (status === 'failed') {
+        const error = turnError(turn);
+        run = this.db.update({ ...run, error: error.detail });
+        console.error(`Scheduled task ${run.jobId} failed (run ${run.id}, session ${run.thread}): ${error.summary}`);
+      }
       const meaningful = run.output.trim() !== '' && run.output.trim() !== '[SILENT]';
       const failure = status === 'failed' || status === 'interrupted' || run.status === 'uncertain';
       // Delay the first Slack write until a result, failure, or interactive request needs attention.
