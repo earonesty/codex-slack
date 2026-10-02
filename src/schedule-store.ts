@@ -1,9 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
+import type { Condition } from './condition.ts';
 
 export type Job = {
   id: string; name: string; prompt: string; cwd: string; cron: string | null; at: string | null;
   timezone: string; channel: string | null; channelCwd: string | null; team: string; user: string;
   enabled: boolean; nextAt: number | null; verbosity?: 'quiet' | 'verbose';
+  thread?: string; threadKey?: string; condition?: Condition; repeat?: boolean;
+  revision?: string; conditionLastChecked?: number; conditionLastExit?: number | null; conditionError?: string | null;
 };
 export type Run = {
   id: string; jobId: string; cwd: string; thread: string | null; key: string | null;

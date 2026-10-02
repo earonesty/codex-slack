@@ -7,6 +7,7 @@ import { controlRequest } from './control.ts';
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     file: { type: 'string' }, 'state-dir': { type: 'string' }, note: { type: 'string' }, help: { type: 'boolean', short: 'h' },
+    session: { type: 'string' },
   } });
   const [action, id] = positionals;
   if (values.help || !action) {
@@ -28,8 +29,19 @@ Task JSON: {"id":"weekly-log-check","name":"Weekly log check","cwd":"/project",
 Use "at":"2026-10-01T09:00:00-07:00" instead of cron for one-shot tasks.
 channel defaults to the closest linked directory; null keeps results local.
 verbosity defaults to quiet: no start/progress posts or [SILENT] no-op results.
+Each visible run creates a NEW Slack thread unless thread is explicitly set.
+Use "thread":"current" (CODEX_THREAD_ID), a saved session ID or Slack root timestamp,
+or --session <id>
+to queue the task as a follow-up in that existing Slack thread, without a new session.
+Optional condition: {"executable":"/absolute/check","args":[],"timeoutSeconds":30}.
+Conditions run without a model: exit 0 fires, 1 waits, other exits/timeouts disable
+the task with conditionError (get/list); no Slack thread or turn is created by checks.
+Conditional tasks disarm after firing unless "repeat":true is explicitly set.
+Cron sets check frequency; at checks retry every condition.pollSeconds (default 300).
+condition.expiresAt defaults to 7 days; set an ISO timestamp with timezone if needed.
 Use "verbosity":"verbose" to include starts, progress, and no-op results.
-Errors, questions, and approvals remain visible in quiet mode. History retains every run.
+Agent errors, questions, and approvals remain visible in quiet mode. Condition failures
+are recorded in get/list without firing the task. History retains every fired run.
 enabled defaults to true for new tasks. put replaces the full task definition.
 The daemon runs the timer. No crontab entry or daemon restart is needed for tasks.`);
     return;
@@ -40,6 +52,7 @@ The daemon runs the timer. No crontab entry or daemon restart is needed for task
   if (action === 'put') {
     if (!values.file) throw new Error('put requires --file task.json (or --file -)');
     job = JSON.parse(readFileSync(values.file === '-' ? 0 : values.file, 'utf8'));
+    if (values.session) job = { ...(job as Record<string, unknown>), thread: values.session };
   }
   const stateDir = expandPath(values['state-dir'] ?? process.env.CODEX_SLACK_STATE_DIR ?? '~/.local/state/codex-slack');
   const result = await controlRequest(path.join(stateDir, 'control.sock'), {

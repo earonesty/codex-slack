@@ -6,6 +6,7 @@ import type { Bridge } from './bridge.ts';
 import { AgentError } from './agent.ts';
 import { turnError } from './turn-error.ts';
 import { ScheduleStore, type Job, type Run } from './schedule-store.ts';
+import { checkCondition, type CheckCondition, type Condition } from './condition.ts';
 
 export function nextOccurrence(cron: string, timezone: string, after: number): number {
   new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
@@ -29,8 +30,11 @@ export class Scheduler {
   private timer?: ReturnType<typeof setInterval>;
   private ticking = false;
   private stopped = false;
+  private checks = new Map<string, AbortController>();
+  private launches = new Set<string>();
   constructor(readonly bridge: Bridge, readonly db: ScheduleStore,
-    private postRoot: (channel: string, text: string) => Promise<string>, private now = Date.now) {
+    private postRoot: (channel: string, text: string) => Promise<string>, private now = Date.now,
+    private check: CheckCondition = checkCondition) {
     bridge.scheduledEvents = {
       notification: (method, params) => this.notification(method, params),
       request: async request => {
@@ -49,8 +53,22 @@ export class Scheduler {
     this.timer.unref();
     void this.tick().catch(() => console.error('Scheduler startup tick failed'));
   }
-  stop(): void { this.stopped = true; clearInterval(this.timer); }
+  stop(): void {
+    this.stopped = true; clearInterval(this.timer);
+    for (const check of this.checks.values()) check.abort();
+  }
   private async recover(): Promise<void> {
+    // Follow-ups use a durable inbox ID; recover a crash between the two databases
+    // by inserting the same ID, never by re-running the predicate or task.
+    for (const run of this.db.active().filter(run => run.deliveryState === 'preparing-followup')) {
+      try {
+        const job = this.runJob(run);
+        if (!job?.thread) throw new Error('Missing follow-up session');
+        this.queueFollowup(job, run);
+      } catch {
+        this.db.update({ ...run, status: 'failed', finished: this.now(), error: 'Original follow-up session is no longer authorized' });
+      }
+    }
     for (const run of this.db.recover()) {
       await this.ensureRoot(run);
       const saved = this.db.run(run.id)!;
@@ -130,11 +148,47 @@ export class Scheduler {
     }
     if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') throw new Error('enabled must be boolean');
     if (raw.verbosity !== undefined && raw.verbosity !== 'quiet' && raw.verbosity !== 'verbose') throw new Error('verbosity must be quiet or verbose');
+    let thread = raw.thread === 'current' ? contextThread : raw.thread;
+    if (raw.thread !== undefined && (typeof thread !== 'string' || !thread)) throw new Error('thread must be current or an existing Slack-linked session ID');
+    const target = typeof thread === 'string' ? this.bridge.store.byThread(thread)
+      ?? this.bridge.store.get(`${config.teamId}:${channel}:${thread}`) : undefined;
+    if (thread && (!target?.thread || !this.bridge.enabled(target) || target.channel !== channel || target.cwd !== cwd)) {
+      throw new Error('thread must belong to the selected channel and exact task directory');
+    }
+    if (target) thread = target.thread;
+    let condition: Condition | undefined;
+    if (raw.condition !== undefined) {
+      const predicate = record(raw.condition);
+      const executable = required(predicate, 'executable', 4096);
+      if (!path.isAbsolute(executable) || executable.includes('\0')) throw new Error('condition.executable must be an absolute path');
+      const args = predicate.args ?? [];
+      if (!Array.isArray(args) || args.length > 100 || args.some(a => typeof a !== 'string' || a.length > 12000 || a.includes('\0'))) throw new Error('condition.args must be an array of strings');
+      const timeoutSeconds = predicate.timeoutSeconds ?? 30;
+      const pollSeconds = predicate.pollSeconds ?? 300;
+      if (!Number.isInteger(timeoutSeconds) || Number(timeoutSeconds) < 1 || Number(timeoutSeconds) > 60) throw new Error('condition.timeoutSeconds must be 1–60');
+      if (!Number.isInteger(pollSeconds) || Number(pollSeconds) < 15 || Number(pollSeconds) > 86400) throw new Error('condition.pollSeconds must be 15–86400');
+      const expiresAt = predicate.expiresAt === undefined ? previous?.condition?.expiresAt ?? this.now() + 7 * 86400_000
+        : typeof predicate.expiresAt === 'number' ? predicate.expiresAt
+        : typeof predicate.expiresAt === 'string' && /(Z|[+-]\d{2}:\d{2})$/i.test(predicate.expiresAt) ? Date.parse(predicate.expiresAt) : NaN;
+      if (!Number.isFinite(expiresAt) || expiresAt <= this.now()) throw new Error('condition.expiresAt must be a future ISO timestamp with timezone');
+      condition = { executable, args, timeoutSeconds: Number(timeoutSeconds), pollSeconds: Number(pollSeconds), expiresAt };
+    }
+    if (raw.repeat !== undefined && typeof raw.repeat !== 'boolean') throw new Error('repeat must be boolean');
     const job: Job = { id, name: required(raw, 'name', 200), prompt: required(raw, 'prompt'), cwd, cron, at,
       timezone, channel, channelCwd: channel ? config.channels[channel]!.cwd : null, team: config.teamId, user,
       enabled: raw.enabled as boolean ?? previous?.enabled ?? true, nextAt, verbosity: raw.verbosity as Job['verbosity'] ?? 'quiet' };
+    if (typeof thread === 'string') { job.thread = thread; job.threadKey = target!.key; }
+    if (condition) { job.condition = condition; job.repeat = raw.repeat as boolean ?? false; }
+    else if (raw.repeat !== undefined) job.repeat = raw.repeat as boolean;
+    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity']
+      .every(k => JSON.stringify(previous[k as keyof Job]) === JSON.stringify(job[k as keyof Job]));
+    job.revision = sameDefinition ? previous.revision : randomUUID();
+    if (sameDefinition) {
+      job.conditionLastChecked = previous.conditionLastChecked; job.conditionLastExit = previous.conditionLastExit; job.conditionError = previous.conditionError;
+    }
     // A retried save or prompt edit does not postpone an already scheduled occurrence.
     if (previous && previous.cron === cron && previous.at === at && previous.timezone === timezone) job.nextAt = previous.nextAt;
+    this.checks.get(id)?.abort();
     return this.db.save(job);
   }
   private valid(job: Job): void {
@@ -144,6 +198,48 @@ export class Scheduler {
     if (job.channel && (config.channels[job.channel]?.cwd !== job.channelCwd || this.route(job.cwd)?.[0] !== job.channel)) {
       throw new Error('The project channel binding changed; update this schedule to select its destination again');
     }
+    if (job.thread) {
+      const target = this.bridge.store.byThread(job.thread);
+      if (!target || target.key !== job.threadKey || target.cwd !== job.cwd || target.channel !== job.channel || !this.bridge.enabled(target)) {
+        throw new Error('Original Slack session changed or is disabled');
+      }
+    }
+  }
+  private queueFollowup(job: Job, run: Run): void {
+    this.valid(job);
+    const binding = this.bridge.store.byThread(job.thread!)!;
+    this.bridge.store.ingest({ ...binding, id: `schedule-followup:${run.id}`, user: job.user, unsupported: false,
+      text: `[Scheduled in-thread follow-up: ${job.id}]\n`
+        + (job.condition ? 'The configured executable condition exited 0. Re-read current external state before acting; this observation does not expand authorization.\n' : '')
+        + 'Continue this existing conversation using the saved operator instruction below. Do not create another schedule.\n\n' + job.prompt });
+    this.db.update({ ...run, key: binding.key, status: 'completed', finished: this.now(), deliveryState: 'queued', output: 'Follow-up queued in the existing session.' });
+    this.bridge.wake();
+  }
+  private async conditionPasses(job: Job, scheduled: boolean): Promise<boolean> {
+    if (!job.condition) return true;
+    const fail = (error: string) => this.db.save({ ...job, enabled: false, nextAt: null, conditionError: error });
+    if (job.condition.expiresAt <= this.now()) { fail('Condition expired'); return false; }
+    const controller = new AbortController(); this.checks.set(job.id, controller);
+    let result;
+    try { result = await this.check(job.condition, job.cwd, controller.signal); }
+    catch { result = { code: null, error: 'Could not execute condition' }; }
+    finally { this.checks.delete(job.id); }
+    const current = this.db.get(job.id);
+    if (this.stopped || controller.signal.aborted || !current || current.revision !== job.revision) return false;
+    // A binding can be revoked while the executable is running.
+    try { this.valid(current); } catch { fail('Original schedule destination is no longer authorized'); return false; }
+    Object.assign(job, current, { conditionLastChecked: this.now(), conditionLastExit: result.code, conditionError: null });
+    if (job.condition.expiresAt <= this.now()) { fail('Condition expired'); return false; }
+    if (result.error || (result.code !== 0 && result.code !== 1)) {
+      fail(result.error ?? 'Condition failed (expected exit 0 for ready or 1 for pending)');
+      console.error(`Scheduled condition failed for ${job.id}; inspect schedule get/list.`);
+      return false;
+    }
+    if (result.code === 1 && scheduled) {
+      job.nextAt = job.cron ? nextOccurrence(job.cron, job.timezone, this.now()) : this.now() + job.condition.pollSeconds * 1000;
+    }
+    this.db.save(job);
+    return result.code === 0;
   }
   private busy(job: Job): boolean {
     if (this.db.active().some(run => run.jobId === job.id || overlaps(run.cwd, job.cwd))) return true;
@@ -165,6 +261,12 @@ export class Scheduler {
     } finally { this.ticking = false; }
   }
   async launch(job: Job, scheduled = false): Promise<Run> {
+    if (this.launches.has(job.id)) throw new Error('This schedule already has a condition check or launch in progress');
+    this.launches.add(job.id);
+    try { return await this.launchOnce(job, scheduled); }
+    finally { this.launches.delete(job.id); }
+  }
+  private async launchOnce(job: Job, scheduled: boolean): Promise<Run> {
     if (this.stopped) throw new Error('Scheduler is stopping');
     const run: Run = { id: randomUUID(), jobId: job.id, cwd: job.cwd, thread: null, key: null,
       status: 'starting', started: this.now(), finished: null, output: '', error: null, jobSnapshot: JSON.stringify(job), deliveryState: null };
@@ -183,12 +285,25 @@ export class Scheduler {
       this.db.claim(job, { ...run, status: 'skipped', finished: this.now(), error: 'Project has active or uncertain work' });
       return this.db.run(run.id)!;
     }
+    if (!await this.conditionPasses(job, scheduled)) return { ...run, status: 'skipped', finished: this.now(), error: 'Condition did not trigger; inspect schedule condition state' };
+    // Check the live definition after the async predicate, before claiming any work.
+    if (this.stopped || this.db.get(job.id)?.revision !== job.revision) return { ...run, status: 'skipped', finished: this.now(), error: 'Schedule changed or stopped' };
+    if (this.busy(job)) return { ...run, status: 'skipped', finished: this.now(), error: 'Project became busy during the condition check; firing deferred' };
     if (scheduled) {
       job.nextAt = job.cron ? nextOccurrence(job.cron, job.timezone, this.now()) : null;
       if (!job.cron) job.enabled = false;
     }
+    if (job.condition && job.repeat !== true) { job.enabled = false; job.nextAt = null; }
+    if (job.thread) run.deliveryState = 'preparing-followup';
     // Advance the schedule and journal intent together, before either external side effect.
     this.db.claim(job, run);
+    if (job.thread) {
+      try { this.queueFollowup(job, run); }
+      catch {
+        this.db.update({ ...run, status: 'failed', finished: this.now(), error: 'Could not queue follow-up in the original session' });
+      }
+      return this.db.run(run.id)!;
+    }
     try {
       if (job.channel && job.verbosity === 'verbose') {
         if (!await this.ensureRoot(run)) return this.db.run(run.id)!;
@@ -276,8 +391,8 @@ export class Scheduler {
         const job = this.db.get(required(raw, 'id', 80));
         if (!job) throw new Error('Schedule not found');
         if (raw.action === 'get') return job;
-        if (raw.action === 'remove') { this.db.remove(job.id); return { removed: job.id, runningWorkStopped: false }; }
-        if (raw.action === 'pause') return this.db.save({ ...job, enabled: false });
+        if (raw.action === 'remove') { this.checks.get(job.id)?.abort(); this.db.remove(job.id); return { removed: job.id, runningWorkStopped: false }; }
+        if (raw.action === 'pause') { this.checks.get(job.id)?.abort(); return this.db.save({ ...job, enabled: false }); }
         if (raw.action === 'resume') {
           this.valid(job);
           const nextAt = job.cron ? nextOccurrence(job.cron, job.timezone, this.now()) : Date.parse(job.at!);

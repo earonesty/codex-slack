@@ -15,13 +15,14 @@ import { listenControl, controlRequest } from '../src/control.ts';
 import { record } from '../src/config.ts';
 import type { Message } from '../src/messages.ts';
 import type { TestContext } from 'node:test';
+import { checkCondition, type CheckCondition } from '../src/condition.ts';
 
 const fake = fileURLToPath(new URL('./fake-codex.mjs', import.meta.url));
 async function until(predicate: () => boolean): Promise<void> {
   for (let i = 0; i < 300; i++) { if (predicate()) return; await sleep(10); }
   assert.fail('Timed out');
 }
-function fixture(t: TestContext, postFailure = false, postDelay = 0) {
+function fixture(t: TestContext, postFailure = false, postDelay = 0, check?: CheckCondition) {
   const dir = mkdtempSync(path.join(tmpdir(), 'codex-schedule-'));
   const rpc = new Rpc(process.execPath, [fake]);
   const codex = new Codex(rpc);
@@ -37,7 +38,7 @@ function fixture(t: TestContext, postFailure = false, postDelay = 0) {
     if (postDelay) await sleep(postDelay);
     if (postFailure) throw new Error('Lost acknowledgement');
     return `${100 + roots.length}.1`;
-  }, () => time);
+  }, () => time, check);
   const job = { id: 'weekly', name: 'Weekly check', prompt: 'Check the logs', cwd: dir, cron: '0 9 * * 1', timezone: 'America/Los_Angeles' };
   t.after(async () => { scheduler.stop(); await bridge.stop(); db.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { dir, rpc, codex, store, db, outputs, roots, config, bridge, scheduler, job, setTime: (next: number) => { time = next; } };
@@ -351,4 +352,163 @@ test('restart exposes a previously invisible unfinished quiet run without replay
   await until(() => f.outputs.some(o => o.text.includes('bridge stopped')));
   assert.equal(f.roots.length, 1);
   assert.equal(f.db.run('interrupted')?.status, 'uncertain');
+});
+
+function seedSession(f: ReturnType<typeof fixture>) {
+  const binding = { key: 'T123:C123:1.1', channel: 'C123', root: '1.1', cwd: f.dir, thread: 'saved-session' };
+  f.store.ingest({ ...binding, id: 'original', user: 'U123', text: 'Watch this condition', unsupported: false });
+  f.store.bind(binding.key, binding.thread); f.store.mark('original', 'done');
+  return binding;
+}
+const predicate = { executable: process.execPath, args: ['-e', 'process.exit(1)'] };
+
+test('conditional polls stay silent and fire once into the existing session when exit becomes zero', async t => {
+  let code = 1, checks = 0;
+  const f = fixture(t, false, 0, async () => { checks++; return { code }; });
+  const binding = seedSession(f);
+  const job = f.scheduler.put({ ...f.job, cron: '*/15 * * * *', thread: 'current', condition: predicate }, binding.thread);
+  assert.equal(job.threadKey, binding.key); assert.equal(job.repeat, false);
+  for (let i = 0; i < 3; i++) {
+    f.setTime(f.db.get(job.id)!.nextAt!); await f.scheduler.tick();
+    assert.equal(f.db.history().length, 0); assert.equal(f.roots.length, 0); assert.equal(f.outputs.length, 0);
+    assert.equal(f.store.pending().length, 0);
+  }
+  code = 0; f.setTime(f.db.get(job.id)!.nextAt!); await f.scheduler.tick();
+  await until(() => f.outputs.some(o => o.text.includes('Scheduled in-thread follow-up')));
+  assert.equal(checks, 4); assert.equal(f.roots.length, 0);
+  assert.ok(f.outputs.every(o => o.key === binding.key));
+  assert.equal(f.store.get(binding.key)?.thread, binding.thread);
+  assert.equal(f.db.get(job.id)?.enabled, false); assert.equal(f.db.get(job.id)?.nextAt, null);
+  assert.equal(f.db.history()[0]?.deliveryState, 'queued');
+  f.scheduler.put({ ...f.job, cron: '*/15 * * * *', thread: binding.thread, condition: predicate });
+  await f.scheduler.tick(); assert.equal(checks, 4); assert.equal(f.db.history().length, 1);
+});
+
+test('condition without thread uses the normal fresh-session branch, with a one-time latch', async t => {
+  const f = fixture(t, false, 0, async () => ({ code: 0 }));
+  const job = f.scheduler.put({ ...f.job, condition: predicate });
+  f.setTime(job.nextAt!); await f.scheduler.tick();
+  await until(() => f.db.history()[0]?.status === 'completed');
+  assert.equal(f.roots.length, 1); assert.ok(f.db.history()[0]?.thread);
+  assert.equal(f.db.get(job.id)?.enabled, false);
+});
+
+test('one-shot at keeps waiting on exit one and repeat true explicitly allows later cron firings', async t => {
+  let code = 1;
+  const f = fixture(t, false, 0, async () => ({ code }));
+  const binding = seedSession(f);
+  const once = f.scheduler.put({ ...f.job, thread: binding.thread, cron: null, at: '2026-09-14T00:00:00Z', condition: { ...predicate, pollSeconds: 60 } });
+  f.setTime(once.nextAt!); await f.scheduler.tick();
+  assert.equal(f.db.get(once.id)?.nextAt, once.nextAt! + 60000);
+  assert.equal(f.db.get(once.id)?.enabled, true); assert.equal(f.db.history().length, 0);
+  await f.scheduler.command({ action: 'remove', id: once.id });
+  code = 0;
+  const repeating = f.scheduler.put({ ...f.job, cron: '*/15 * * * *', thread: binding.thread, condition: predicate, repeat: true });
+  f.setTime(repeating.nextAt!); await f.scheduler.tick();
+  await until(() => f.outputs.length > 0);
+  await until(() => f.codex.active.size === 0);
+  f.setTime(f.db.get(repeating.id)!.nextAt!); await f.scheduler.tick();
+  assert.equal(f.db.history().length, 2); assert.equal(f.db.get(repeating.id)?.enabled, true);
+  assert.equal(f.roots.length, 0);
+});
+
+test('ordinary schedule can target an existing conversation without a condition', async t => {
+  const f = fixture(t);
+  const binding = seedSession(f);
+  const job = f.scheduler.put({ ...f.job, thread: binding.thread });
+  f.setTime(job.nextAt!); await f.scheduler.tick();
+  await until(() => f.outputs.length > 0);
+  assert.equal(f.roots.length, 0); assert.ok(f.outputs.every(o => o.key === binding.key));
+  assert.equal(f.db.get(job.id)?.enabled, true);
+});
+
+test('condition failures and expiration disable the task without agent work or new Slack threads', async t => {
+  for (const result of [{ code: 2 }, { code: null, error: 'Condition timed out' }]) {
+    const f = fixture(t, false, 0, async () => result);
+    const job = f.scheduler.put({ ...f.job, condition: predicate });
+    f.setTime(job.nextAt!); await f.scheduler.tick();
+    assert.equal(f.db.get(job.id)?.enabled, false); assert.ok(f.db.get(job.id)?.conditionError);
+    assert.equal(f.roots.length, 0); assert.equal(f.db.history().length, 0);
+  }
+  const f = fixture(t, false, 0, async () => { assert.fail('Expired predicate must not run'); });
+  const job = f.scheduler.put({ ...f.job, condition: { ...predicate, expiresAt: '2026-09-13T16:00:00Z' } });
+  f.setTime(job.nextAt!); await f.scheduler.tick();
+  assert.equal(f.db.get(job.id)?.conditionError, 'Condition expired'); assert.equal(f.db.get(job.id)?.enabled, false);
+});
+
+test('pause/remove/replace/shutdown during a predicate cancels a would-be successful firing', async t => {
+  for (const action of ['pause', 'remove', 'replace', 'stop']) {
+    let resolve!: (value: { code: number }) => void;
+    const f = fixture(t, false, 0, async () => new Promise(r => { resolve = r; }));
+    const binding = seedSession(f);
+    const job = f.scheduler.put({ ...f.job, thread: binding.thread, condition: predicate });
+    f.setTime(job.nextAt!);
+    const tick = f.scheduler.tick();
+    if (action === 'stop') f.scheduler.stop();
+    else if (action === 'replace') f.scheduler.put({ ...job, prompt: 'Different follow-up' });
+    else await f.scheduler.command({ action, id: job.id });
+    resolve({ code: 0 }); await tick;
+    assert.equal(f.store.pending().length, 0); assert.equal(f.db.history().length, 0); assert.equal(f.roots.length, 0);
+  }
+});
+
+test('follow-up crash recovery deduplicates an input even when it already completed', async t => {
+  const f = fixture(t);
+  const binding = seedSession(f);
+  const job = f.scheduler.put({ ...f.job, thread: binding.thread, condition: predicate });
+  f.db.save({ ...job, enabled: false, nextAt: null });
+  const run = { id: 'recover-follow-up', jobId: job.id, cwd: job.cwd, thread: null, key: null,
+    status: 'starting' as const, started: 1, finished: null, output: '', error: null,
+    jobSnapshot: JSON.stringify(job), deliveryState: 'preparing-followup' };
+  f.db.add(run); f.bridge.wake = () => {};
+  f.scheduler.start(); await until(() => f.db.run(run.id)?.status === 'completed');
+  assert.equal(f.store.pending().length, 1); assert.equal(f.store.pending()[0]?.key, binding.key);
+  f.store.mark(`schedule-followup:${run.id}`, 'done');
+  f.db.update(run); f.scheduler.start();
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  assert.equal(f.store.pending().length, 0); assert.equal(f.roots.length, 0);
+});
+
+test('condition argv bounds and original-thread ownership are validated at save', t => {
+  const f = fixture(t); const binding = seedSession(f);
+  for (const condition of [{ executable: 'node' }, { ...predicate, args: 'shell words' }, { ...predicate, timeoutSeconds: 0 },
+    { ...predicate, pollSeconds: 1 }, { ...predicate, expiresAt: 'invalid' }]) {
+    assert.throws(() => f.scheduler.put({ ...f.job, condition }));
+  }
+  assert.throws(() => f.scheduler.put({ ...f.job, thread: 'current' }), /thread/);
+  assert.throws(() => f.scheduler.put({ ...f.job, thread: 'unknown' }), /thread/);
+  assert.throws(() => f.scheduler.put({ ...f.job, thread: binding.thread, channel: null }), /thread/);
+  assert.throws(() => f.scheduler.put({ ...f.job, condition: predicate, repeat: 'yes' }), /repeat/);
+  const byTimestamp = f.scheduler.put({ ...f.job, thread: binding.root });
+  assert.equal(byTimestamp.thread, binding.thread); assert.equal(byTimestamp.threadKey, binding.key);
+});
+
+test('active work or revoked authorization appearing during a condition prevents its follow-up', async t => {
+  for (const state of ['busy', 'revoked']) {
+    const f = fixture(t, false, 0, async () => {
+      if (state === 'busy') f.codex.active.set('saved-session', 'interactive-turn');
+      else f.config.allowedUserIds.length = 0;
+      return { code: 0 };
+    });
+    const binding = seedSession(f);
+    const job = f.scheduler.put({ ...f.job, thread: binding.thread, condition: predicate });
+    f.setTime(job.nextAt!); await f.scheduler.tick();
+    assert.equal(f.store.pending().length, 0); assert.equal(f.roots.length, 0);
+    assert.equal(f.db.history().length, 0);
+    if (state === 'revoked') assert.equal(f.db.get(job.id)?.enabled, false);
+    else { assert.equal(f.db.get(job.id)?.enabled, true); f.codex.active.clear(); }
+  }
+});
+
+test('real predicates support pending, ready, missing executable, timeout and cancellation', async () => {
+  const condition = { ...predicate, timeoutSeconds: 1, pollSeconds: 15, expiresAt: Date.now() + 60000 };
+  assert.deepEqual(await checkCondition(condition, tmpdir(), new AbortController().signal), { code: 1 });
+  assert.deepEqual(await checkCondition({ ...condition, args: ['-e', 'process.exit(0)'] }, tmpdir(), new AbortController().signal), { code: 0 });
+  const missing = await checkCondition({ ...condition, executable: '/not-a-real-executable' }, tmpdir(), new AbortController().signal);
+  assert.equal(missing.error, 'Could not execute condition');
+  const timeout = await checkCondition({ ...condition, args: ['-e', 'setInterval(()=>{},1000)'] }, tmpdir(), new AbortController().signal);
+  assert.equal(timeout.error, 'Condition timed out');
+  const controller = new AbortController();
+  const check = checkCondition({ ...condition, args: ['-e', 'setInterval(()=>{},1000)'] }, tmpdir(), controller.signal);
+  controller.abort(); assert.equal((await check).error, 'Condition cancelled');
 });

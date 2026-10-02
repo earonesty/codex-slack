@@ -121,9 +121,64 @@ Downloads are private (0600 files in per-message 0700 directories) under `stateD
 
 ## Scheduled Codex work
 
+Schedules accept an optional executable `condition` and an optional existing
+`thread`. Use both for deterministic “wait until ready, then follow up here”
+monitors. Without `thread`, every visible scheduled run creates a new Slack thread.
+Quiet mode alone does not prevent a recurring agent from posting the same blocker
+on every occurrence. See [the monitor skill](skills/schedule-slack-monitor/SKILL.md)
+and [the ordinary task skill](skills/schedule-slack-task/SKILL.md).
+
+```json
+{
+  "id": "wait-for-ready",
+  "name": "Wait for readiness",
+  "cwd": "/absolute/project/path",
+  "cron": "*/5 * * * *",
+  "timezone": "America/Los_Angeles",
+  "thread": "current",
+  "condition": {
+    "executable": "/absolute/path/check-ready",
+    "args": [],
+    "timeoutSeconds": 30
+  },
+  "repeat": false,
+  "prompt": "Verify readiness and tell me in this conversation."
+}
+```
+
+Save with the same `put --file` command as ordinary tasks. `thread:"current"`
+resolves `CODEX_THREAD_ID`; an explicit `thread` or CLI `--session` accepts an
+existing agent session ID or the Slack thread's root timestamp in the selected
+channel. The task directory must exactly match the saved session. The destination
+is pinned and revalidated before delivery. The follow-up goes through that
+conversation's durable inbox and normal interactive permissions, without creating
+a new session or Slack root. Its history entry records **queued**, not proof that
+the resulting agent turn finished; use `!status` in the original thread to inspect
+it. Existing active work delays firing rather than being steered by a timer.
+
+The predicate runs directly, with argv and no implicit shell, as the daemon's OS
+user in the task directory. It has the daemon's environment and is outside the
+agent sandbox; use read-only checks safe to repeat. No model runs on pending checks,
+and command output is discarded. Exit **0** fires, **1** waits, and other exit
+codes, signals, timeouts, or launch failures disable the schedule with
+`conditionError` visible in `get`/`list`. These failures and expiration do not post
+Slack alerts. `conditionLastChecked` and `conditionLastExit` expose check state.
+The timeout accepts 1–60 seconds. A cron schedule sets check cadence; an `at`
+schedule retries pending checks every `condition.pollSeconds` (default 300).
+`condition.expiresAt` accepts an ISO timestamp with timezone and defaults to seven
+days after creation. No missed checks are replayed after downtime.
+
+Conditional tasks disarm on their first firing unless `repeat:true` explicitly
+allows repeated firing while the condition remains true. A `thread` without a
+condition also works for ordinary time-based follow-ups. Pause/remove cancel an
+in-flight predicate, but do not cancel an already queued follow-up. A stable
+durable input ID prevents replay across a crash between claiming a firing and
+queuing its follow-up. Readiness never expands the saved prompt's authorization;
+re-read current external state before taking an authorized action.
+
 The daemon includes a persistent timer using five-field cron expressions and IANA timezones, plus one-shot timestamps. A local command creates tasks without starting a model or posting a Slack message. When due, each task starts a native session in its project directory. By default, a fresh Slack thread is created only when there is a result, error, question, or approval to show. Output, questions, approvals, and subsequent replies use the existing bridge.
 
-After `npm run build`, use `node bin/codex-slack-schedule.mjs --help` (or `npm run schedule -- --help`). Install `skills/schedule-slack-task` in your personal Codex skills directory to make natural-language scheduling discoverable. On Erik's machine the installed command is `~/.local/bin/codex-slack-schedule`.
+After `npm run build`, use `node bin/codex-slack-schedule.mjs --help` (or `npm run schedule -- --help`). Install both `skills/schedule-slack-task` and `skills/schedule-slack-monitor` in your personal Codex skills directory, preserving their folder names, to make both scheduling branches discoverable. On Erik's machine the installed command is `~/.local/bin/codex-slack-schedule`.
 
 Save a task JSON file:
 

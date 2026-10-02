@@ -1,0 +1,4 @@
+interface:
+  display_name: "Schedule Slack Monitor"
+  short_description: "Wait for a condition, then follow up in the same Slack thread"
+  default_prompt: "Use $schedule-slack-monitor to wait for a deterministic condition and follow up once in the current Slack thread."

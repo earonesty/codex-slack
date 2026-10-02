@@ -79,6 +79,8 @@ export class Bridge {
     });
   }
   start(): void { this.store.recover(this.agent.name); this.drain(); void this.flush(); }
+  /** Drain a newly queued local follow-up without replaying crash recovery. */
+  wake(): void { this.drain(); }
   enabled(binding: Binding): boolean {
     if (this.store.disabled(binding.key) || binding.key.split(':')[0] !== this.config.teamId || !this.config.channels[binding.channel]) return false;
     if (Object.entries(this.config.channels).some(([channel, value]) => channel !== binding.channel && value.cwd === binding.cwd)) return false;
