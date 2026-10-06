@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { Condition } from './condition.ts';
+import type { CodexPermissions } from './agent.ts';
 
 export type Job = {
   id: string; name: string; prompt: string; cwd: string; cron: string | null; at: string | null;
@@ -8,6 +9,7 @@ export type Job = {
   scheduledBrowserUse?: boolean;
   thread?: string; threadKey?: string; condition?: Condition; repeat?: boolean;
   revision?: string; conditionLastChecked?: number; conditionLastExit?: number | null; conditionError?: string | null;
+  codexPermissions?: CodexPermissions;
 };
 export type Run = {
   id: string; jobId: string; cwd: string; thread: string | null; key: string | null;

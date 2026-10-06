@@ -19,11 +19,17 @@ export type AgentCapabilities = {
 
 export class AgentError extends Error {}
 
+export type CodexPermissions = {
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  approvalPolicy?: 'on-request' | 'never';
+};
+
 /**
  * The Slack side consumes this normalized session/turn contract. Drivers own
  * their native process protocol and translate it to Codex-shaped turn events.
  */
 export abstract class Agent extends EventEmitter {
+  permissionsForThread: (thread: string) => CodexPermissions | undefined = () => undefined;
   abstract readonly name: string;
   abstract readonly active: Map<string, string>;
   abstract readonly capabilities: AgentCapabilities;
@@ -31,7 +37,7 @@ export abstract class Agent extends EventEmitter {
   abstract start(): Promise<void>;
   abstract check(): Promise<void>;
   abstract close(): void;
-  abstract create(cwd: string, options?: { unattended?: boolean }): Promise<string>;
+  abstract create(cwd: string, options?: { unattended?: boolean; codexPermissions?: CodexPermissions }): Promise<string>;
   abstract resume(thread: string, cwd?: string): Promise<void>;
   abstract read(thread: string): Promise<AgentThread>;
   abstract list(cwd: string, limit?: number): Promise<{ threads: AgentThread[]; more: boolean }>;

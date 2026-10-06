@@ -4,6 +4,8 @@ import path from 'node:path';
 
 export type Channel = { cwd: string };
 export type AgentConfig = { driver: 'codex' | 'claude'; command: string };
+export type GithubTriageSkipRule = Partial<Record<'author' | 'title' | 'repo' | 'label' | 'body', string>>;
+export type GithubConfig = { channel: string; owners: string[]; include: string[]; exclude: string[]; intervalSeconds: number; batchSize: number; skipTriage?: GithubTriageSkipRule[]; excludePullRequestAuthors?: string[] };
 export type Config = {
   root: string;
   teamId: string;
@@ -12,6 +14,7 @@ export type Config = {
   stateDir: string;
   agent: AgentConfig;
   scheduledBrowserUse: boolean;
+  github?: GithubConfig;
 };
 
 export function record(value: unknown): Record<string, unknown> {
@@ -51,11 +54,49 @@ export function parseConfig(value: unknown): Config {
   if (raw.codexBin !== undefined && (typeof raw.codexBin !== 'string' || !raw.codexBin.trim())) throw new Error('Invalid codexBin');
   if (raw.codexBin !== undefined && raw.agent !== undefined) throw new Error('Use agent.command instead of codexBin when agent is configured');
   if (raw.scheduledBrowserUse !== undefined && typeof raw.scheduledBrowserUse !== 'boolean') throw new Error('scheduledBrowserUse must be boolean');
+  let github: GithubConfig | undefined;
+  if (raw.github !== undefined) {
+    if (!raw.github || typeof raw.github !== 'object' || Array.isArray(raw.github)) throw new Error('Invalid github configuration');
+    const feed = record(raw.github);
+    if (typeof feed.channel !== 'string' || !channels[feed.channel]) throw new Error('github.channel must be a bound Slack channel');
+    const names = (field: string, pattern: RegExp): string[] => {
+      const values = feed[field] ?? [];
+      if (!Array.isArray(values) || values.some(value => typeof value !== 'string' || !pattern.test(value))) throw new Error(`Invalid github.${field}`);
+      return [...new Set(values.map(value => String(value).toLowerCase()))];
+    };
+    const owners = names('owners', /^[a-z0-9][a-z0-9-]*$/i);
+    if (!owners.length) throw new Error('github.owners must identify primary-maintainer accounts/organizations');
+    const include = names('include', /^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/i);
+    const exclude = names('exclude', /^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/i);
+    const intervalSeconds = feed.intervalSeconds ?? 300;
+    const batchSize = feed.batchSize ?? 3;
+    if (!Number.isInteger(intervalSeconds) || Number(intervalSeconds) < 60) throw new Error('github.intervalSeconds must be an integer >= 60');
+    if (!Number.isInteger(batchSize) || Number(batchSize) < 1 || Number(batchSize) > 10) throw new Error('github.batchSize must be between 1 and 10');
+    github = { channel: feed.channel, owners, include, exclude, intervalSeconds: Number(intervalSeconds), batchSize: Number(batchSize) };
+    if (feed.excludePullRequestAuthors !== undefined) {
+      if (!Array.isArray(feed.excludePullRequestAuthors)) throw new Error('Invalid github.excludePullRequestAuthors');
+      github.excludePullRequestAuthors = names('excludePullRequestAuthors', /^[a-z0-9][a-z0-9-]*(?:\[bot\])?$/i);
+    }
+    if (feed.skipTriage !== undefined) {
+      if (!Array.isArray(feed.skipTriage)) throw new Error('github.skipTriage must be an array of regex rules');
+      github.skipTriage = feed.skipTriage.map((value, index) => {
+        const entries = Object.entries(record(value));
+        if (!entries.length) throw new Error(`github.skipTriage[${index}] must contain at least one regex field`);
+        for (const [field, pattern] of entries) {
+          if (!['author', 'title', 'repo', 'label', 'body'].includes(field) || typeof pattern !== 'string' || !pattern.length) throw new Error(`Invalid github.skipTriage[${index}].${field}`);
+          try { new RegExp(pattern, 'i'); }
+          catch { throw new Error(`Invalid regex in github.skipTriage[${index}].${field}`); }
+        }
+        return Object.fromEntries(entries) as GithubTriageSkipRule;
+      });
+    }
+  }
   return {
     root, teamId: raw.teamId, allowedUserIds: raw.allowedUserIds as string[], channels,
     stateDir: expandPath(raw.stateDir as string ?? '~/.local/state/codex-slack'),
     agent: { driver, command: String(agentRaw.command ?? raw.codexBin ?? driver) },
     scheduledBrowserUse: raw.scheduledBrowserUse as boolean ?? true,
+    ...(github ? { github } : {}),
   };
 }
 

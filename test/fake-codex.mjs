@@ -56,6 +56,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   }
   const thread = threads.get(params?.threadId) ?? { id: params?.threadId, cwd: '/restored', status: { type: 'idle' }, turns: [] };
   threads.set(thread.id, thread);
+  if (method === 'thread/resume') thread.resumeParams = params;
   if (method === 'thread/resume' || method === 'thread/read') { send({ id, result: { thread } }); continue; }
   if (method === 'turn/start') {
     const text = params.input[0].text;

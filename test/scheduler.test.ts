@@ -76,17 +76,20 @@ test('scheduled output lands in a new bound thread and Slack replies resume that
   await until(() => f.db.history()[0]?.status === 'completed');
   const run = f.db.history()[0]!;
   const started = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
-  assert.deepEqual(started.startParams, { cwd: f.dir, sandbox: 'danger-full-access', approvalPolicy: 'never' });
+  assert.deepEqual(started.startParams, { cwd: f.dir });
   assert.match(JSON.stringify(started.turns), /\[Unattended browser policy\]/);
   assert.equal(f.roots.length, 1);
   assert.equal(f.roots[0]?.channel, 'C123');
   assert.ok(run.output.includes('Reply: Check the logs'));
   assert.equal(f.store.get(run.key!)?.thread, run.thread);
   assert.equal(f.outputs.filter(output => output.text.includes('Reply: Check the logs')).length, 1);
+  assert.equal(f.rpc.recycle(), true);
   f.bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '102.1', thread_ts: '101.1', text: 'Investigate the timeout' });
   await until(() => f.outputs.some(output => output.text === 'Reply: Investigate the timeout'));
   assert.equal(f.store.get(run.key!)?.thread, run.thread);
   assert.equal(f.outputs.find(output => output.text === 'Reply: Investigate the timeout')?.key, run.key);
+  const resumed = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
+  assert.deepEqual(resumed.resumeParams, { threadId: run.thread });
   await f.scheduler.tick();
   assert.equal(f.roots.length, 1);
 });
@@ -105,6 +108,30 @@ test('overdue recurring work catches up once; one-shot work is consumed once', a
   await f.scheduler.tick(); assert.equal(f.roots.length, 2);
   assert.equal(f.db.get('once')?.enabled, false);
   assert.equal(f.db.get('once')?.nextAt, null);
+});
+
+test('explicit Codex permissions persist on resume using the saved run snapshot', async t => {
+  const f = fixture(t);
+  const codexPermissions = { sandbox: 'read-only' as const, approvalPolicy: 'on-request' as const };
+  const run = await f.scheduler.launch(f.scheduler.put({ ...f.job, codexPermissions }));
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  const started = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
+  assert.deepEqual(started.startParams, { cwd: f.dir, ...codexPermissions });
+  f.scheduler.put(f.job); // Future occurrences inherit defaults; this run keeps its explicit settings.
+  f.codex.close();
+  const restored = new Codex(f.rpc);
+  restored.permissionsForThread = f.codex.permissionsForThread;
+  t.after(() => restored.close());
+  await restored.resume(run.thread!);
+  const resumed = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
+  assert.deepEqual(resumed.resumeParams, { threadId: run.thread, ...codexPermissions });
+});
+
+test('permission overrides reject invalid settings and unknown fields', t => {
+  const f = fixture(t);
+  for (const codexPermissions of [null, [], { sandbox: 'invalid' }, { sandbox: ['read-only'] }, { approvalPolicy: 'invalid' }, { approval_policy: 'never' }]) {
+    assert.throws(() => f.scheduler.put({ ...f.job, codexPermissions }), /codexPermissions/);
+  }
 });
 
 test('local-only tasks preserve final output and create no Slack message', async t => {

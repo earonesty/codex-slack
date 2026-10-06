@@ -89,7 +89,9 @@ export function resolveSettings(value: unknown, directory: Directory, existing?:
     Object.defineProperty(pins.channels, key, { value: channel.id, writable: true, configurable: true, enumerable: true });
     channels[channel.id] = { cwd: typeof setting === 'string' ? setting : record(setting).cwd };
   }
-  return { config: parseConfig({ ...raw, teamId: directory.teamId, allowedUserIds: ids, channels }), pins };
+  const github = raw.github === undefined ? undefined : { ...record(raw.github),
+    channel: pins.channels[String(record(raw.github).channel).replace(/^#/, '').toLowerCase()] ?? record(raw.github).channel };
+  return { config: parseConfig({ ...raw, ...(github === undefined ? {} : { github }), teamId: directory.teamId, allowedUserIds: ids, channels }), pins };
 }
 
 export function loadResolvedConfig(directory: Directory): Config {
