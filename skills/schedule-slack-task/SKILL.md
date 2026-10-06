@@ -41,6 +41,12 @@ Example definition (adapt the prompt and timing to the actual request):
 
 The saved prompt is the instruction for a fresh session: include the needed log locations, environment, and relevant decisions from the conversation. Preserve the actions the user actually authorized. An example authorizing deployment is not blanket permission for every scheduled task. Existing Codex permissions and project instructions still apply.
 
+### Browser automation policy
+
+`scheduledBrowserUse` controls only the Codex Browser Use/browser-control/CUA connector and its connector file-download approvals. It does not control whether a scheduled task may use a browser or whether that browser must be headless. With `scheduledBrowserUse:false`, interactive and headless browser sessions driven through repository-owned CDP, Playwright/Puppeteer, nodriver/Zendriver, or similar tooling remain allowed, as do direct HTTP and repository-owned scripts. Do not translate `false` into “no browser,” “headless only,” or “no interactive browser automation,” and do not request Browser Use approval for an allowed CDP or repository-owned browser session.
+
+Set `scheduledBrowserUse:true` only when the task specifically needs the Codex Browser Use/CUA connector. The daemon setting is the default; a task-level value overrides it. When modifying a task, read its complete definition first and preserve its existing value unless the user asks to change it.
+
 Recurring tasks use five-field cron (`minute hour day month weekday`) plus an IANA timezone. One-shot tasks use `"at":"2026-10-01T09:00:00-07:00"` instead of `cron`; always include an explicit offset or `Z`. `enabled:false` saves a paused task. If the daemon has multiple authorized Slack users, set `user` to the requester's verified Slack member ID; the originating session can usually supply it automatically.
 
 ## Slack routing and runtime behavior
