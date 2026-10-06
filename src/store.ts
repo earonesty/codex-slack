@@ -183,6 +183,9 @@ export class Store {
     return this.db.prepare(`SELECT b.*, i.id, i.user, i.text, i.unsupported, i.files FROM inbox i
       JOIN bindings b ON b.key=i.key WHERE i.status='pending' ORDER BY i.rowid`).all().map(row => ({ ...row, files: JSON.parse(String(row.files)) })) as unknown as Incoming[];
   }
+  inboxStatus(id: string): string | undefined {
+    return this.db.prepare('SELECT status FROM inbox WHERE id=?').get(id)?.status as string | undefined;
+  }
   mark(id: string, status: 'dispatching' | 'done' | 'uncertain' | 'failed'): void {
     this.db.prepare('UPDATE inbox SET status=? WHERE id=?').run(status, id);
   }

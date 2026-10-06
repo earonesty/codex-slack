@@ -52,7 +52,9 @@ export class Scheduler {
     bridge.scheduledEvents = {
       notification: (method, params) => this.notification(method, params),
       request: async request => {
-        const run = db.byThread(String(request.params.threadId ?? ''));
+        const thread = String(request.params.threadId ?? '');
+        const direct = db.byThread(thread);
+        const run = direct?.finished === null ? direct : this.followupRun(thread);
         if (!run || run.finished !== null) return false;
         const job = this.runJob(run);
         const scheduledBrowserUse = job?.scheduledBrowserUse ?? this.bridge.config.scheduledBrowserUse;
@@ -80,16 +82,25 @@ export class Scheduler {
   private async recover(): Promise<void> {
     // Follow-ups use a durable inbox ID; recover a crash between the two databases
     // by inserting the same ID, never by re-running the predicate or task.
-    for (const run of this.db.active().filter(run => run.deliveryState === 'preparing-followup')) {
+    const retained = new Set<string>();
+    for (const run of this.db.active().filter(run => run.deliveryState === 'preparing-followup' || run.deliveryState === 'queued')) {
       try {
         const job = this.runJob(run);
         if (!job?.thread) throw new Error('Missing follow-up session');
-        this.queueFollowup(job, run);
+        if (run.deliveryState === 'preparing-followup') this.queueFollowup(job, run);
+        if (this.bridge.store.inboxStatus(`schedule-followup:${run.id}`) !== 'pending') {
+          const saved = this.db.run(run.id)!;
+          this.db.update({ ...saved, status: 'uncertain',
+            error: 'The bridge stopped after dispatching this scheduled follow-up. It was not replayed; inspect the existing session before resolving the run.' });
+          continue;
+        }
+        this.bridge.wake();
+        retained.add(run.id);
       } catch {
         this.db.update({ ...run, status: 'failed', finished: this.now(), error: 'Original follow-up session is no longer authorized' });
       }
     }
-    for (const run of this.db.recover()) {
+    for (const run of this.db.recover(retained)) {
       await this.ensureRoot(run);
       const saved = this.db.run(run.id)!;
       if (saved.key) this.bridge.say(saved.key,
@@ -99,6 +110,17 @@ export class Scheduler {
   }
   private runJob(run: Run): Job | undefined {
     return run.jobSnapshot ? JSON.parse(run.jobSnapshot) as Job : this.db.get(run.jobId);
+  }
+  private followupRun(thread: string): Run | undefined {
+    return this.db.active().find(run => {
+      if (run.deliveryState !== 'queued') return false;
+      return this.runJob(run)?.thread === thread;
+    });
+  }
+  private taskPrompt(job: Job): string {
+    return (job.scheduledBrowserUse ?? this.bridge.config.scheduledBrowserUse)
+      ? job.prompt
+      : `${job.prompt}\n\n${unattendedBrowserPolicy}`;
   }
   private async ensureRoot(run: Run): Promise<boolean> {
     run = this.db.run(run.id)!;
@@ -233,8 +255,8 @@ export class Scheduler {
     this.bridge.store.ingest({ ...binding, id: `schedule-followup:${run.id}`, user: job.user, unsupported: false,
       text: `[Scheduled in-thread follow-up: ${job.id}]\n`
         + (job.condition ? 'The configured executable condition exited 0. Re-read current external state before acting; this observation does not expand authorization.\n' : '')
-        + 'Continue this existing conversation using the saved operator instruction below. Do not create another schedule.\n\n' + job.prompt });
-    this.db.update({ ...run, key: binding.key, status: 'completed', finished: this.now(), deliveryState: 'queued', output: 'Follow-up queued in the existing session.' });
+        + 'Continue this existing conversation using the saved operator instruction below. Do not create another schedule.\n\n' + this.taskPrompt(job) });
+    this.db.update({ ...run, key: binding.key, status: 'running', finished: null, deliveryState: 'queued', output: 'Follow-up queued in the existing session.' });
     this.bridge.wake();
   }
   private async conditionPasses(job: Job, scheduled: boolean): Promise<boolean> {
@@ -338,10 +360,7 @@ export class Scheduler {
       this.db.update({ ...run, status: 'running' });
       this.valid(job);
       if (this.stopped) throw new Error('Scheduler stopped before task dispatch');
-      const scheduledBrowserUse = job.scheduledBrowserUse ?? this.bridge.config.scheduledBrowserUse;
-      const prompt = scheduledBrowserUse || job.prompt.includes('[Unattended browser policy]')
-        ? job.prompt
-        : `${job.prompt}\n\n${unattendedBrowserPolicy}`;
+      const prompt = this.taskPrompt(job);
       const instruction = `${prompt}\n\n[Scheduled execution: ${job.id}]\nThis is one occurrence of an existing task; perform the work now. Do not create another schedule. When no action was taken, nothing changed, and no error, blocker, or question needs attention, return exactly [SILENT] as your final answer. Never use [SILENT] after an action or to hide a failure or request for judgment. Preserve the user's stated authorization and project instructions. Finish with a concise summary of findings, changes, verification, commits/deployment if requested, and any unresolved question.${job.channel ? ' Your output and questions are delivered to the linked Slack thread, where the user can reply.' : ' There is no linked Slack channel. If user judgment is required, finish with the question so it is saved in the local run history.'}`;
       await this.bridge.agent.input(run.thread, job.cwd, instruction);
       // Completion may arrive before the turn/start acknowledgement; never overwrite it here.
@@ -362,7 +381,21 @@ export class Scheduler {
     return this.db.run(run.id)!;
   }
   private async notification(method: string, params: Record<string, unknown>): Promise<boolean> {
-    let run = this.db.byThread(String(params.threadId ?? ''));
+    const thread = String(params.threadId ?? '');
+    const followup = this.followupRun(thread);
+    if (followup) {
+      if (method === 'turn/completed') {
+        const turn = record(params.turn);
+        const status = turn.status;
+        const error = status === 'failed' ? turnError(turn).detail : null;
+        this.db.update({ ...followup,
+          status: followup.status === 'uncertain' ? 'uncertain'
+            : status === 'failed' ? 'failed' : status === 'interrupted' ? 'interrupted' : 'completed',
+          finished: this.now(), error });
+      }
+      return false;
+    }
+    let run = this.db.byThread(thread);
     // Only the original scheduled occurrence is quiet; human replies are normal bridge turns.
     if (!run || run.finished !== null) return false;
     const quiet = this.runJob(run)?.verbosity !== 'verbose';

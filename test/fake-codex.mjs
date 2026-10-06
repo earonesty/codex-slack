@@ -59,7 +59,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (method === 'thread/resume' || method === 'thread/read') { send({ id, result: { thread } }); continue; }
   if (method === 'turn/start') {
     const text = params.input[0].text;
-    const task = text.split(/\n\n\[(?:Unattended browser policy|Scheduled execution:)/)[0];
+    const beforePolicy = text.split(/\n\n\[(?:Unattended browser policy|Scheduled execution:)/)[0];
+    const task = beforePolicy.split('Continue this existing conversation using the saved operator instruction below. Do not create another schedule.\n\n').at(-1);
     if (task === 'reject') { send({ id, error: { code: -32602, message: 'test rejection' } }); continue; }
     const turn = { id: `turn-${++sequence}`, status: 'inProgress', items: [], input: params.input };
     thread.turns.push(turn); thread.status = { type: 'active' };
