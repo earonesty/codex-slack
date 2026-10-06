@@ -58,6 +58,7 @@ export class Codex extends Agent {
   }
   respond(id: string | number, result: unknown): void { this.rpc.respond(id, result); }
   reject(id: string | number, message: string): void { this.rpc.reject(id, message); }
+  /** Start a native Codex thread with optional explicit sandbox and approval defaults. */
   async create(cwd: string, options: { unattended?: boolean; codexPermissions?: CodexPermissions } = {}): Promise<string> {
     await this.rpc.start();
     // Scheduled and interactive sessions inherit the machine's Codex permissions.
@@ -68,6 +69,7 @@ export class Codex extends Agent {
     if (options.codexPermissions) this.permissions.set(id, { ...options.codexPermissions });
     return id;
   }
+  /** Resume a saved thread, restoring persisted per-session permission overrides. */
   async resume(thread: string): Promise<void> {
     await this.rpc.start();
     if (this.loaded.has(thread)) return;

@@ -60,6 +60,7 @@ export async function discover(api: Api): Promise<Directory> {
   };
 }
 
+/** Resolve human-readable Slack settings to pinned IDs before strict config parsing. */
 export function resolveSettings(value: unknown, directory: Directory, existing?: Pins): { config: Config; pins: Pins } {
   const raw = record(value);
   if (raw.teamId && raw.teamId !== directory.teamId) throw new Error('Configured workspace does not match the bot token');

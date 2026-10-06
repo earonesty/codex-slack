@@ -26,6 +26,7 @@ export function expandPath(value: string): string {
   return path.resolve(value === '~' ? homedir() : value.startsWith('~/') ? path.join(homedir(), value.slice(2)) : value);
 }
 
+/** Validate resolved IDs, filesystem boundaries, agent settings, and optional integrations. */
 export function parseConfig(value: unknown): Config {
   const raw = record(value);
   if (typeof raw.teamId !== 'string' || !/^T[A-Z0-9]+$/.test(raw.teamId)) throw new Error('teamId must be a Slack workspace ID');
@@ -56,6 +57,7 @@ export function parseConfig(value: unknown): Config {
   if (raw.scheduledBrowserUse !== undefined && typeof raw.scheduledBrowserUse !== 'boolean') throw new Error('scheduledBrowserUse must be boolean');
   let github: GithubConfig | undefined;
   if (raw.github !== undefined) {
+    if (driver !== 'codex') throw new Error('github feed requires the Codex driver for enforced read-only triage');
     if (!raw.github || typeof raw.github !== 'object' || Array.isArray(raw.github)) throw new Error('Invalid github configuration');
     const feed = record(raw.github);
     if (typeof feed.channel !== 'string' || !channels[feed.channel]) throw new Error('github.channel must be a bound Slack channel');

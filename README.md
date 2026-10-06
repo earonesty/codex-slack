@@ -121,7 +121,7 @@ Downloads are private (0600 files in per-message 0700 directories) under `stateD
 
 ## GitHub maintainer feed
 
-Optionally bind a dedicated Slack channel to an existing workspace directory and add:
+Optionally bind a dedicated Slack channel to an existing workspace directory and add the following configuration. The feed requires the Codex driver because its automatic turns use Codex's enforced read-only sandbox:
 
 ```json
 "github": {
@@ -165,19 +165,24 @@ triaged items are not triaged again when filters change. Restart after edits.
 Every five minutes by default, the feed backfills open issues and PRs, then tracks
 updated items (including closed ones). [GitHub's issues endpoint includes PRs](https://docs.github.com/en/rest/issues/issues).
 Each item has one Slack card/thread; subsequent updates edit the card without
-repeating automatic triage. The description is previewed on the card, while Codex
-reads current discussion and PR details when assessing it. Reviews/checks that do
-not change the issue's `updated_at` are not standalone feed events.
+repeating automatic triage. The automatic assessment uses the persisted title,
+description, labels, author, state, and update timestamp. It reports when comments,
+diffs, checks, or reviews need inspection in a later operator-authorized follow-up.
+Reviews/checks that do not change the issue's `updated_at` are not standalone feed
+events.
 
-New cards start ordinary native agent sessions through the existing durable inbox.
-Their automatic prompt authorizes read-only investigation and an assessment in
-Slack. Public discussion/code is untrusted data. Posting GitHub replies, changing
-labels, closing, pushing, creating PRs, or merging requires a subsequent explicit
-operator instruction in the thread. These are prompt-level task restrictions,
-using the ordinary driver's permissions, rather than a separate GitHub write
-credential boundary. Reply naturally, for example “draft a response,” “post that
-response,” “close as duplicate of #12,” or “fix it and open a PR.” Existing operator
-authorization, interactive approvals, `!stop`, `!status`, and restart recovery apply.
+New cards start transient Codex sessions through the existing durable inbox with
+`sandbox:"read-only"` and `approvalPolicy:"never"` enforced. The model receives the
+persisted item snapshot and is told not to invoke tools. The restricted session is
+used only for that automatic turn and is never attached as the Slack conversation's
+resumable session. Public GitHub data remains untrusted input. A later human reply
+starts an ordinary session with the item's URL and context; it can inspect current
+comments, diffs, checks, and reviews and follows the operator's normal Codex policy.
+Posting GitHub replies, changing labels, closing, pushing, creating PRs, or merging
+still requires that explicit operator instruction. Reply naturally, for example
+“draft a response,” “post that response,” “close as duplicate of #12,” or “fix it
+and open a PR.” Existing operator authorization, interactive approvals, `!stop`,
+`!status`, and restart recovery apply.
 
 `batchSize` (1–10, default 3) limits new assessments per polling cycle and pauses
 launches while that many agent turns are active; backlog drains gradually. Feed

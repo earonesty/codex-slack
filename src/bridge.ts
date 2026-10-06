@@ -6,7 +6,7 @@ import { turnError } from './turn-error.ts';
 import { Interactions } from './interactions.ts';
 import { chunks, textMessage, type Message } from './messages.ts';
 import type { ServerRequest } from './rpc.ts';
-import { Store, type Binding, type Incoming } from './store.ts';
+import { Store, type AgentDispatch, type Binding, type Incoming } from './store.ts';
 import { ThreadStatus } from './thread-status.ts';
 import type { KnownBlock } from '@slack/types';
 
@@ -105,6 +105,13 @@ export class Bridge {
     await Promise.allSettled([...this.queues.values(), ...this.events.values()]);
   }
   ingest(team: unknown, value: unknown): boolean {
+    return this.ingestWithDispatch(team, value);
+  }
+  /** Queue a bridge-owned synthetic event with enforced agent-session settings. */
+  ingestSystem(team: unknown, value: unknown, agentDispatch: AgentDispatch): boolean {
+    return this.ingestWithDispatch(team, value, agentDispatch);
+  }
+  private ingestWithDispatch(team: unknown, value: unknown, agentDispatch?: AgentDispatch): boolean {
     const event = record(value);
     if (!authorized(this.config, team, event.user, event.channel) || event.bot_id || event.bot_profile || event.hidden) return false;
     if (event.subtype && event.subtype !== 'file_share') return false;
@@ -118,7 +125,7 @@ export class Bridge {
     if (!text.trim() && !files.length) return false;
     const key = `${String(team)}:${channel}:${root}`;
     const added = this.store.ingest({ id: `${String(team)}:${channel}:${event.ts}`, key, channel, root,
-      cwd: this.config.channels[channel]!.cwd, thread: null, user: String(event.user), text, unsupported, files });
+      cwd: this.config.channels[channel]!.cwd, thread: null, user: String(event.user), text, unsupported, files, agentDispatch });
     if (added) this.drain();
     return added;
   }
@@ -164,9 +171,12 @@ export class Bridge {
         const files = message.files?.length ? await this.prepareAttachments(message.files) : [];
         if (this.stopped || !this.enabled(binding)) { this.store.mark(message.id, 'failed'); return; }
         if (!binding.thread) {
-          binding.thread = await this.agent.create(binding.cwd);
-          this.store.bind(binding.key, binding.thread);
-          this.say(binding.key, `Session started in ${binding.cwd}`);
+          binding.thread = await this.agent.create(binding.cwd, { codexPermissions: message.agentDispatch?.codexPermissions });
+          if (message.agentDispatch?.transient) this.store.bindTransient(binding.key, binding.thread);
+          else {
+            this.store.bind(binding.key, binding.thread);
+            this.say(binding.key, `Session started in ${binding.cwd}`);
+          }
         }
         if (!this.enabled(binding)) { this.store.mark(message.id, 'failed'); return; }
         await this.agent.input(binding.thread, binding.cwd, message.text, files);
@@ -278,6 +288,7 @@ export class Bridge {
       if (turn.status === 'failed' || turn.status === 'interrupted') {
         this.say(binding.key, turn.status === 'failed' ? `${this.agent.name} turn failed. ${turnError(turn).summary} Use !status to inspect the session.` : `${this.agent.name} turn interrupted.`, `${thread}:${String(turn.id)}:status`);
       }
+      this.store.releaseTransient(thread);
     }
     void this.flush();
   }

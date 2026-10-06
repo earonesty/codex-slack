@@ -68,14 +68,19 @@ test('restart recovers pending input but never replays uncertain dispatch or Sla
   let store = new Store(filename);
   store.ingest(incoming());
   store.bind(incoming().key, 'persisted-thread');
+  store.bindTransient(incoming().key, 'stale-restricted-thread');
   store.mark(incoming().id, 'dispatching');
-  store.ingest(incoming('T123:C123:2.1'));
+  store.ingest({ ...incoming('T123:C123:2.1'),
+    agentDispatch: { codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true } });
   store.enqueue(incoming().key, { text: 'may have been posted' }, 'output-1');
   store.deliveryStatus('output-1', 'sending');
   store.close(); store = new Store(filename);
   store.recover();
   assert.deepEqual(store.pending().map(message => message.id), ['T123:C123:2.1']);
+  assert.deepEqual(store.pending()[0]?.agentDispatch,
+    { codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true });
   assert.equal(store.get(incoming().key)?.thread, 'persisted-thread');
+  assert.equal(store.byThread('stale-restricted-thread'), undefined);
   assert.ok(store.deliveries().every(output => output.id !== 'output-1'));
   assert.equal(store.deliveries().length, 2);
   store.close();
@@ -126,6 +131,30 @@ test('top-level messages create sessions, replies reuse them, and duplicate even
   assert.notEqual(store.get('T123:C123:3.1')?.thread, thread);
   assert.equal(outputs.filter(o => o.text === 'Reply: first').length, 1);
   assert.equal(outputs.find(o => o.text === 'Reply: second')?.root, '1.1');
+});
+
+test('system turns enforce durable permissions without capturing later human follow-ups', async t => {
+  const rpc = new Rpc(process.execPath, [fake]); const codex = new Codex(rpc); const store = new Store(':memory:');
+  const outputs: string[] = [];
+  const bridge = new Bridge(config, store, codex, async (_, message) => { outputs.push(message.text); });
+  t.after(async () => { await bridge.stop(); store.close(); });
+  const event = { user: 'U123', channel: 'C123', ts: '1.1', text: 'automatic snapshot' };
+  bridge.ingestSystem('T123', event, {
+    codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true,
+  });
+  await until(() => outputs.includes('Reply: automatic snapshot'));
+  assert.equal(store.get('T123:C123:1.1')?.thread, null);
+  const restricted = (await codex.list(tmpdir())).threads[0]!;
+  const restrictedData = await rpc.request('thread/read', { threadId: restricted.id }) as { thread: { startParams: unknown } };
+  assert.deepEqual(restrictedData.thread.startParams,
+    { cwd: tmpdir(), sandbox: 'read-only', approvalPolicy: 'never' });
+
+  bridge.ingest('T123', { ...event, ts: '2.1', thread_ts: '1.1', text: 'authorized follow-up' });
+  await until(() => outputs.includes('Reply: authorized follow-up'));
+  const ordinary = store.get('T123:C123:1.1')?.thread;
+  assert.ok(ordinary && ordinary !== restricted.id);
+  const ordinaryData = await rpc.request('thread/read', { threadId: ordinary }) as { thread: { startParams: unknown } };
+  assert.deepEqual(ordinaryData.thread.startParams, { cwd: tmpdir() });
 });
 
 test('follow-ups steer an active turn and !stop interrupts it', async t => {
