@@ -30,7 +30,7 @@ function fixture(t: TestContext, postFailure = false, postDelay = 0, check?: Che
   const db = new ScheduleStore(':memory:');
   const outputs: (Message & { key: string })[] = [];
   const roots: { channel: string; text: string }[] = [];
-  const config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: dir } }, stateDir: dir, agent: { driver: 'codex' as const, command: 'unused' } };
+  const config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: dir } }, stateDir: dir, agent: { driver: 'codex' as const, command: 'unused' }, scheduledBrowserUse: false };
   const bridge = new Bridge(config, store, codex, async (binding, message) => { outputs.push({ key: binding.key, ...message }); });
   let time = Date.parse('2026-09-13T15:00:00Z');
   const scheduler = new Scheduler(bridge, db, async (channel, text) => {
@@ -77,6 +77,7 @@ test('scheduled output lands in a new bound thread and Slack replies resume that
   const run = f.db.history()[0]!;
   const started = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
   assert.deepEqual(started.startParams, { cwd: f.dir, sandbox: 'danger-full-access', approvalPolicy: 'never' });
+  assert.match(JSON.stringify(started.turns), /\[Unattended browser policy\]/);
   assert.equal(f.roots.length, 1);
   assert.equal(f.roots[0]?.channel, 'C123');
   assert.ok(run.output.includes('Reply: Check the logs'));
@@ -265,6 +266,7 @@ test('quiet is the default, including old saved definitions, and verbosity is va
   assert.equal(f.db.get(job.id)?.verbosity, 'quiet');
   assert.equal(f.db.list()[0]?.verbosity, 'quiet');
   assert.throws(() => f.scheduler.put({ ...f.job, verbosity: 'loud' }), /verbosity/);
+  assert.throws(() => f.scheduler.put({ ...f.job, scheduledBrowserUse: 'yes' }), /scheduledBrowserUse/);
 });
 
 for (const prompt of ['silent', 'silent-progress', 'empty']) {
@@ -316,6 +318,44 @@ test('quiet approvals retain the proposed diff while the Slack root is created a
   f.bridge.interactions.choose(token, 'accept');
   await until(() => f.db.run(run.id)?.status === 'completed');
   assert.ok(f.outputs.some(o => o.text === 'Approval received: accept'));
+  assert.equal(f.roots.length, 1);
+});
+
+test('scheduled Browser Use approvals are declined without blocking or posting to Slack', async t => {
+  const f = fixture(t);
+  f.config.scheduledBrowserUse = true;
+  const run = await f.scheduler.launch(f.scheduler.put({ ...f.job, prompt: 'browser-approval', scheduledBrowserUse: false }));
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  assert.equal(f.db.run(run.id)?.output.trim(), '[SILENT]');
+  assert.equal(f.roots.length, 0);
+  assert.equal(f.outputs.length, 0);
+});
+
+test('saved policy marker cannot bypass scheduled Browser Use restrictions', async t => {
+  const f = fixture(t);
+  const prompt = 'browser-approval\n\n[Unattended browser policy]\nIncomplete saved policy';
+  const run = await f.scheduler.launch(f.scheduler.put({ ...f.job, prompt, scheduledBrowserUse: false }));
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  const started = record(record(await f.rpc.request('thread/read', { threadId: f.db.run(run.id)?.thread })).thread);
+  const turns = started.turns as { input: { text: string }[] }[];
+  const input = turns[0]!.input[0]!.text;
+  assert.equal(input.match(/\[Unattended browser policy\]/g)?.length, 2);
+  assert.equal(f.outputs.length, 0);
+});
+
+test('scheduled Browser Use remains interactive when enabled', async t => {
+  const f = fixture(t);
+  const job = f.scheduler.put({ ...f.job, prompt: 'browser-approval', scheduledBrowserUse: true });
+  assert.equal(job.scheduledBrowserUse, true);
+  const run = await f.scheduler.launch(job);
+  await until(() => f.outputs.some(o => o.text === 'Codex needs approval.'));
+  const approval = f.outputs.find(o => o.text === 'Codex needs approval.')!;
+  const actions = record(approval.blocks?.find(b => b.type === 'actions'));
+  const token = String(record((actions.elements as unknown[])[0]).value);
+  f.bridge.interactions.choose(token, 'decline');
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  const started = record(record(await f.rpc.request('thread/read', { threadId: f.db.run(run.id)?.thread })).thread);
+  assert.doesNotMatch(JSON.stringify(started.turns), /\[Unattended browser policy\]/);
   assert.equal(f.roots.length, 1);
 });
 
@@ -422,6 +462,41 @@ test('ordinary schedule can target an existing conversation without a condition'
   assert.equal(f.db.get(job.id)?.enabled, true);
 });
 
+test('in-thread scheduled Browser Use is guarded only for the scheduled turn', async t => {
+  const f = fixture(t);
+  const binding = seedSession(f);
+  const job = f.scheduler.put({ ...f.job, thread: binding.thread, prompt: 'browser-approval', scheduledBrowserUse: false });
+  f.setTime(job.nextAt!); await f.scheduler.tick();
+  await until(() => f.db.history()[0]?.status === 'completed');
+  assert.equal(f.outputs.some(output => output.text === 'Codex needs approval.'), false);
+  const started = record(record(await f.rpc.request('thread/read', { threadId: binding.thread })).thread);
+  assert.match(JSON.stringify(started.turns), /\[Unattended browser policy\]/);
+
+  f.bridge.ingest('T123', { user: 'U123', channel: 'C123', ts: '2.1', thread_ts: binding.root, text: 'browser-approval' });
+  await until(() => f.outputs.some(output => output.text === 'Codex needs approval.'));
+  const approval = f.outputs.find(output => output.text === 'Codex needs approval.')!;
+  const actions = record(approval.blocks?.find(block => block.type === 'actions'));
+  const token = String(record((actions.elements as unknown[])[0]).value);
+  f.bridge.interactions.choose(token, 'decline');
+  await until(() => f.codex.active.size === 0);
+});
+
+test('in-thread scheduled Browser Use remains interactive when enabled', async t => {
+  const f = fixture(t);
+  const binding = seedSession(f);
+  const job = f.scheduler.put({ ...f.job, thread: binding.thread, prompt: 'browser-approval', scheduledBrowserUse: true });
+  f.setTime(job.nextAt!); await f.scheduler.tick();
+  await until(() => f.outputs.some(output => output.text === 'Codex needs approval.'));
+  assert.equal(f.db.history()[0]?.status, 'running');
+  const started = record(record(await f.rpc.request('thread/read', { threadId: binding.thread })).thread);
+  assert.doesNotMatch(JSON.stringify(started.turns), /\[Unattended browser policy\]/);
+  const approval = f.outputs.find(output => output.text === 'Codex needs approval.')!;
+  const actions = record(approval.blocks?.find(block => block.type === 'actions'));
+  const token = String(record((actions.elements as unknown[])[0]).value);
+  f.bridge.interactions.choose(token, 'decline');
+  await until(() => f.db.history()[0]?.status === 'completed');
+});
+
 test('condition failures and expiration disable the task without agent work or new Slack threads', async t => {
   for (const result of [{ code: 2 }, { code: null, error: 'Condition timed out' }]) {
     const f = fixture(t, false, 0, async () => result);
@@ -461,11 +536,12 @@ test('follow-up crash recovery deduplicates an input even when it already comple
     status: 'starting' as const, started: 1, finished: null, output: '', error: null,
     jobSnapshot: JSON.stringify(job), deliveryState: 'preparing-followup' };
   f.db.add(run); f.bridge.wake = () => {};
-  f.scheduler.start(); await until(() => f.db.run(run.id)?.status === 'completed');
+  f.scheduler.start(); await until(() => f.db.run(run.id)?.deliveryState === 'queued');
   assert.equal(f.store.pending().length, 1); assert.equal(f.store.pending()[0]?.key, binding.key);
   f.store.mark(`schedule-followup:${run.id}`, 'done');
-  f.db.update(run); f.scheduler.start();
-  await until(() => f.db.run(run.id)?.status === 'completed');
+  f.db.update(run);
+  f.scheduler.start();
+  await until(() => f.db.run(run.id)?.status === 'uncertain');
   assert.equal(f.store.pending().length, 0); assert.equal(f.roots.length, 0);
 });
 

@@ -16,7 +16,7 @@ export class Bridge {
   readonly interactions: Interactions;
   scheduledEvents?: {
     notification(method: string, params: Record<string, unknown>): Promise<boolean>;
-    request(request: ServerRequest): Promise<void>;
+    request(request: ServerRequest): Promise<boolean>;
   };
   private events = new Map<string, Promise<void>>();
   private event(thread: string, action: () => Promise<void>): void {
@@ -52,7 +52,7 @@ export class Bridge {
     agent.on('request', (request: ServerRequest) => {
       const receive = async () => {
         try {
-          await this.scheduledEvents?.request(request);
+          if (await this.scheduledEvents?.request(request)) return;
           const binding = this.store.byThread(String(record(request.params).threadId ?? ''));
           if (binding && !this.enabled(binding)) { agent.reject(request.id, 'Channel binding is disabled'); return; }
           this.interactions.receive(request);

@@ -5,6 +5,7 @@ export type Job = {
   id: string; name: string; prompt: string; cwd: string; cron: string | null; at: string | null;
   timezone: string; channel: string | null; channelCwd: string | null; team: string; user: string;
   enabled: boolean; nextAt: number | null; verbosity?: 'quiet' | 'verbose';
+  scheduledBrowserUse?: boolean;
   thread?: string; threadKey?: string; condition?: Condition; repeat?: boolean;
   revision?: string; conditionLastChecked?: number; conditionLastExit?: number | null; conditionError?: string | null;
 };
@@ -71,8 +72,8 @@ export class ScheduleStore {
     try { this.save(job); this.add(run); this.db.exec('COMMIT'); }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  recover(): Run[] {
-    const active = this.active().filter(run => run.status !== 'uncertain');
+  recover(exclude: ReadonlySet<string> = new Set()): Run[] {
+    const active = this.active().filter(run => run.status !== 'uncertain' && !exclude.has(run.id));
     const uncertain: Run[] = [];
     for (const run of active) {
       if (!run.thread) {

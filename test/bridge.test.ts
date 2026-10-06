@@ -17,7 +17,7 @@ import { chunks } from '../src/messages.ts';
 import { Onboarding } from '../src/onboarding.ts';
 
 const fake = fileURLToPath(new URL('./fake-codex.mjs', import.meta.url));
-const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', agent: { driver: 'codex', command: 'unused' } };
+const config: Config = { root: tmpdir(), teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } }, stateDir: '/unused', agent: { driver: 'codex', command: 'unused' }, scheduledBrowserUse: true };
 const incoming = (id = 'T123:C123:1.1'): Incoming => ({ id, user: 'U123', key: 'T123:C123:1.1', channel: 'C123', root: '1.1', cwd: tmpdir(), thread: null, text: 'hello', unsupported: false });
 
 async function until(predicate: () => boolean): Promise<void> {
@@ -30,6 +30,9 @@ test('configuration requires a workspace, explicit users, channel IDs, and exist
   assert.throws(() => parseConfig({ ...config, allowedUserIds: [] }), /allowedUserIds/);
   assert.throws(() => parseConfig({ ...config, channels: { '#name': { cwd: '/tmp' } } }), /Invalid channel/);
   const valid = parseConfig({ ...config, root: tmpdir(), channels: { C123: { cwd: tmpdir() } } });
+  assert.equal(valid.scheduledBrowserUse, true);
+  assert.equal(parseConfig({ ...config, scheduledBrowserUse: false }).scheduledBrowserUse, false);
+  assert.throws(() => parseConfig({ ...config, scheduledBrowserUse: 'no' }), /scheduledBrowserUse/);
   assert.equal(authorized(valid, 'T123', 'U123', 'C123'), true);
   assert.equal(authorized(valid, 'Tother', 'U123', 'C123'), false);
   assert.equal(authorized(valid, 'T123', 'Uother', 'C123'), false);

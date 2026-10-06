@@ -11,6 +11,7 @@ export type Config = {
   channels: Record<string, Channel>;
   stateDir: string;
   agent: AgentConfig;
+  scheduledBrowserUse: boolean;
 };
 
 export function record(value: unknown): Record<string, unknown> {
@@ -49,10 +50,12 @@ export function parseConfig(value: unknown): Config {
   if (agentRaw.command !== undefined && (typeof agentRaw.command !== 'string' || !agentRaw.command.trim())) throw new Error('Invalid agent.command');
   if (raw.codexBin !== undefined && (typeof raw.codexBin !== 'string' || !raw.codexBin.trim())) throw new Error('Invalid codexBin');
   if (raw.codexBin !== undefined && raw.agent !== undefined) throw new Error('Use agent.command instead of codexBin when agent is configured');
+  if (raw.scheduledBrowserUse !== undefined && typeof raw.scheduledBrowserUse !== 'boolean') throw new Error('scheduledBrowserUse must be boolean');
   return {
     root, teamId: raw.teamId, allowedUserIds: raw.allowedUserIds as string[], channels,
     stateDir: expandPath(raw.stateDir as string ?? '~/.local/state/codex-slack'),
     agent: { driver, command: String(agentRaw.command ?? raw.codexBin ?? driver) },
+    scheduledBrowserUse: raw.scheduledBrowserUse as boolean ?? true,
   };
 }
 

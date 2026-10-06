@@ -7,6 +7,20 @@ import { AgentError } from './agent.ts';
 import { turnError } from './turn-error.ts';
 import { ScheduleStore, type Job, type Run } from './schedule-store.ts';
 import { checkCondition, type CheckCondition, type Condition } from './condition.ts';
+import type { ServerRequest } from './rpc.ts';
+
+const unattendedBrowserPolicy = `[Unattended browser policy]
+Do not use the installed Browser Use connector, browser-control/CUA, or connector file-download actions during this unattended occurrence. Use repository-owned scripts and APIs, direct HTTP, Playwright/Puppeteer, nodriver/Zendriver, or CDP tooling instead. Do not request approval merely to use connector/browser tooling. If repository-native browser automation cannot complete one subtask, record the blocker and continue all independent authorized work. This restriction does not prohibit repository-owned headless browser automation.`;
+
+function browserUseApproval(request: ServerRequest): boolean {
+  if (request.method !== 'mcpServer/elicitation/request') return false;
+  const params = record(request.params);
+  const meta = record(params._meta);
+  return params.serverName === 'cua_repl'
+    || meta.connector_id === 'browser-use'
+    || meta.connector_name === 'Browser use'
+    || meta.tool_name === 'download_browser_files';
+}
 
 export function nextOccurrence(cron: string, timezone: string, after: number): number {
   new Intl.DateTimeFormat('en', { timeZone: timezone }).format();
@@ -38,11 +52,19 @@ export class Scheduler {
     bridge.scheduledEvents = {
       notification: (method, params) => this.notification(method, params),
       request: async request => {
-        const run = db.byThread(String(request.params.threadId ?? ''));
-        if (!run || run.finished !== null) return;
+        const thread = String(request.params.threadId ?? '');
+        const direct = db.byThread(thread);
+        const run = direct?.finished === null ? direct : this.followupRun(thread);
+        if (!run || run.finished !== null) return false;
         const job = this.runJob(run);
+        const scheduledBrowserUse = job?.scheduledBrowserUse ?? this.bridge.config.scheduledBrowserUse;
+        if (!scheduledBrowserUse && browserUseApproval(request)) {
+          this.bridge.agent.respond(request.id, { action: 'decline', content: null });
+          return true;
+        }
         if (job?.channel) await this.ensureRoot(run);
         else db.update({ ...run, error: 'This run requested interaction without a Slack channel. Inspect its session and final output locally.' });
+        return false;
       },
     };
     bridge.agent.on('disconnect', () => { if (!this.stopped) void this.recover(); });
@@ -60,16 +82,25 @@ export class Scheduler {
   private async recover(): Promise<void> {
     // Follow-ups use a durable inbox ID; recover a crash between the two databases
     // by inserting the same ID, never by re-running the predicate or task.
-    for (const run of this.db.active().filter(run => run.deliveryState === 'preparing-followup')) {
+    const retained = new Set<string>();
+    for (const run of this.db.active().filter(run => run.deliveryState === 'preparing-followup' || run.deliveryState === 'queued')) {
       try {
         const job = this.runJob(run);
         if (!job?.thread) throw new Error('Missing follow-up session');
-        this.queueFollowup(job, run);
+        if (run.deliveryState === 'preparing-followup') this.queueFollowup(job, run);
+        if (this.bridge.store.inboxStatus(`schedule-followup:${run.id}`) !== 'pending') {
+          const saved = this.db.run(run.id)!;
+          this.db.update({ ...saved, status: 'uncertain',
+            error: 'The bridge stopped after dispatching this scheduled follow-up. It was not replayed; inspect the existing session before resolving the run.' });
+          continue;
+        }
+        this.bridge.wake();
+        retained.add(run.id);
       } catch {
         this.db.update({ ...run, status: 'failed', finished: this.now(), error: 'Original follow-up session is no longer authorized' });
       }
     }
-    for (const run of this.db.recover()) {
+    for (const run of this.db.recover(retained)) {
       await this.ensureRoot(run);
       const saved = this.db.run(run.id)!;
       if (saved.key) this.bridge.say(saved.key,
@@ -79,6 +110,17 @@ export class Scheduler {
   }
   private runJob(run: Run): Job | undefined {
     return run.jobSnapshot ? JSON.parse(run.jobSnapshot) as Job : this.db.get(run.jobId);
+  }
+  private followupRun(thread: string): Run | undefined {
+    return this.db.active().find(run => {
+      if (run.deliveryState !== 'queued') return false;
+      return this.runJob(run)?.thread === thread;
+    });
+  }
+  private taskPrompt(job: Job): string {
+    return (job.scheduledBrowserUse ?? this.bridge.config.scheduledBrowserUse)
+      ? job.prompt
+      : `${job.prompt}\n\n${unattendedBrowserPolicy}`;
   }
   private async ensureRoot(run: Run): Promise<boolean> {
     run = this.db.run(run.id)!;
@@ -148,6 +190,7 @@ export class Scheduler {
     }
     if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') throw new Error('enabled must be boolean');
     if (raw.verbosity !== undefined && raw.verbosity !== 'quiet' && raw.verbosity !== 'verbose') throw new Error('verbosity must be quiet or verbose');
+    if (raw.scheduledBrowserUse !== undefined && typeof raw.scheduledBrowserUse !== 'boolean') throw new Error('scheduledBrowserUse must be boolean');
     let thread = raw.thread === 'current' ? contextThread : raw.thread;
     if (raw.thread !== undefined && (typeof thread !== 'string' || !thread)) throw new Error('thread must be current or an existing Slack-linked session ID');
     const target = typeof thread === 'string' ? this.bridge.store.byThread(thread)
@@ -177,10 +220,11 @@ export class Scheduler {
     const job: Job = { id, name: required(raw, 'name', 200), prompt: required(raw, 'prompt'), cwd, cron, at,
       timezone, channel, channelCwd: channel ? config.channels[channel]!.cwd : null, team: config.teamId, user,
       enabled: raw.enabled as boolean ?? previous?.enabled ?? true, nextAt, verbosity: raw.verbosity as Job['verbosity'] ?? 'quiet' };
+    if (typeof raw.scheduledBrowserUse === 'boolean') job.scheduledBrowserUse = raw.scheduledBrowserUse;
     if (typeof thread === 'string') { job.thread = thread; job.threadKey = target!.key; }
     if (condition) { job.condition = condition; job.repeat = raw.repeat as boolean ?? false; }
     else if (raw.repeat !== undefined) job.repeat = raw.repeat as boolean;
-    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity']
+    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'scheduledBrowserUse']
       .every(k => JSON.stringify(previous[k as keyof Job]) === JSON.stringify(job[k as keyof Job]));
     job.revision = sameDefinition ? previous.revision : randomUUID();
     if (sameDefinition) {
@@ -211,8 +255,8 @@ export class Scheduler {
     this.bridge.store.ingest({ ...binding, id: `schedule-followup:${run.id}`, user: job.user, unsupported: false,
       text: `[Scheduled in-thread follow-up: ${job.id}]\n`
         + (job.condition ? 'The configured executable condition exited 0. Re-read current external state before acting; this observation does not expand authorization.\n' : '')
-        + 'Continue this existing conversation using the saved operator instruction below. Do not create another schedule.\n\n' + job.prompt });
-    this.db.update({ ...run, key: binding.key, status: 'completed', finished: this.now(), deliveryState: 'queued', output: 'Follow-up queued in the existing session.' });
+        + 'Continue this existing conversation using the saved operator instruction below. Do not create another schedule.\n\n' + this.taskPrompt(job) });
+    this.db.update({ ...run, key: binding.key, status: 'running', finished: null, deliveryState: 'queued', output: 'Follow-up queued in the existing session.' });
     this.bridge.wake();
   }
   private async conditionPasses(job: Job, scheduled: boolean): Promise<boolean> {
@@ -316,7 +360,8 @@ export class Scheduler {
       this.db.update({ ...run, status: 'running' });
       this.valid(job);
       if (this.stopped) throw new Error('Scheduler stopped before task dispatch');
-      const instruction = `${job.prompt}\n\n[Scheduled execution: ${job.id}]\nThis is one occurrence of an existing task; perform the work now. Do not create another schedule. When no action was taken, nothing changed, and no error, blocker, or question needs attention, return exactly [SILENT] as your final answer. Never use [SILENT] after an action or to hide a failure or request for judgment. Preserve the user's stated authorization and project instructions. Finish with a concise summary of findings, changes, verification, commits/deployment if requested, and any unresolved question.${job.channel ? ' Your output and questions are delivered to the linked Slack thread, where the user can reply.' : ' There is no linked Slack channel. If user judgment is required, finish with the question so it is saved in the local run history.'}`;
+      const prompt = this.taskPrompt(job);
+      const instruction = `${prompt}\n\n[Scheduled execution: ${job.id}]\nThis is one occurrence of an existing task; perform the work now. Do not create another schedule. When no action was taken, nothing changed, and no error, blocker, or question needs attention, return exactly [SILENT] as your final answer. Never use [SILENT] after an action or to hide a failure or request for judgment. Preserve the user's stated authorization and project instructions. Finish with a concise summary of findings, changes, verification, commits/deployment if requested, and any unresolved question.${job.channel ? ' Your output and questions are delivered to the linked Slack thread, where the user can reply.' : ' There is no linked Slack channel. If user judgment is required, finish with the question so it is saved in the local run history.'}`;
       await this.bridge.agent.input(run.thread, job.cwd, instruction);
       // Completion may arrive before the turn/start acknowledgement; never overwrite it here.
     } catch (error) {
@@ -336,7 +381,21 @@ export class Scheduler {
     return this.db.run(run.id)!;
   }
   private async notification(method: string, params: Record<string, unknown>): Promise<boolean> {
-    let run = this.db.byThread(String(params.threadId ?? ''));
+    const thread = String(params.threadId ?? '');
+    const followup = this.followupRun(thread);
+    if (followup) {
+      if (method === 'turn/completed') {
+        const turn = record(params.turn);
+        const status = turn.status;
+        const error = status === 'failed' ? turnError(turn).detail : null;
+        this.db.update({ ...followup,
+          status: followup.status === 'uncertain' ? 'uncertain'
+            : status === 'failed' ? 'failed' : status === 'interrupted' ? 'interrupted' : 'completed',
+          finished: this.now(), error });
+      }
+      return false;
+    }
+    let run = this.db.byThread(thread);
     // Only the original scheduled occurrence is quiet; human replies are normal bridge turns.
     if (!run || run.finished !== null) return false;
     const quiet = this.runJob(run)?.verbosity !== 'verbose';

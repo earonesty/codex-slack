@@ -4,11 +4,13 @@ import { record } from './config.ts';
 import type { Agent } from './agent.ts';
 import type { ServerRequest } from './rpc.ts';
 import type { Binding, Store } from './store.ts';
+import { mcpFormContent, supportedMcpForm } from './mcp-elicitation.ts';
 
 type Question = { id: string; question: string; options: string[] };
 type Pending = {
   request: ServerRequest; binding: Binding; turnId?: string; kind: 'approval' | 'questions';
   choices?: Record<string, unknown>; questions?: Question[];
+  mcpSchema?: Record<string, unknown>;
 };
 
 /** Button tokens reference live requests; neither decisions nor thread IDs come from Slack. */
@@ -73,10 +75,27 @@ export class Interactions {
       choices = { accept: { permissions, scope: 'turn' }, decline: { permissions: {}, scope: 'turn' } };
       if (!request.params.permissions) { this.unsupported(request, binding, 'Unknown permissions request shape.'); return; }
     } else if (request.method === 'mcpServer/elicitation/request') {
-      // An explicit negative response is preferable to inventing an answer for an unknown form.
-      this.rpc.respond(request.id, { action: 'decline', content: null });
-      this.store.enqueue(binding.key, { text: `${this.rpc.name} requested an MCP form or URL confirmation. Version 0.1 does not render MCP elicitation forms, so this request was declined. Continue that operation in a native client.` });
-      return;
+      const schema = record(request.params.requestedSchema);
+      if (request.params.mode === 'url') {
+        choices = { accept: { action: 'accept', content: null }, decline: { action: 'decline', content: null }, cancel: { action: 'cancel', content: null } };
+      } else if (request.params.mode === 'form' && supportedMcpForm(schema)) {
+        if (!Object.keys(record(schema.properties)).length) {
+          choices = { accept: { action: 'accept', content: {} }, decline: { action: 'decline', content: null }, cancel: { action: 'cancel', content: null } };
+        } else {
+          const details = JSON.stringify(request.params, null, 2);
+          if (details.length > 10000) { this.unsupported(request, binding, 'MCP form is too large for Slack; use a native client. No user denial was sent.'); return; }
+          this.pending.set(token, { ...base, kind: 'questions', mcpSchema: schema,
+            choices: { cancel: { action: 'cancel', content: null } },
+            questions: [{ id: 'content', question: 'Enter the requested fields as a JSON object.', options: [] }] });
+          this.store.enqueue(binding.key, { text: `${this.rpc.name} needs MCP form input.`, blocks: [
+            ...Array.from({ length: Math.ceil(details.length / 2800) }, (_, i): KnownBlock => ({ type: 'section', text: { type: 'plain_text', text: details.slice(i * 2800, (i + 1) * 2800) } })),
+            { type: 'actions', elements: [this.button('Answer', token, 'answer'), this.button('Cancel', token, 'cancel')] },
+          ] });
+          return;
+        }
+      } else {
+        this.unsupported(request, binding, 'This MCP form requires a native client. No user denial was sent.'); return;
+      }
     } else { this.unsupported(request, binding, `Unsupported interactive method: ${request.method}`); return; }
 
     const item = this.items.get(`${String(request.params.threadId)}:${String(request.params.itemId)}`)?.item;
@@ -106,7 +125,7 @@ export class Interactions {
     const pending = this.pending.get(token);
     if (!pending) throw new Error('This request has expired or was already answered.');
     let result: unknown;
-    if (pending.kind === 'questions' && action === 'cancel') result = { answers: {} };
+    if (pending.kind === 'questions' && action === 'cancel') result = pending.mcpSchema ? { action: 'cancel', content: null } : { answers: {} };
     else if (pending.choices && Object.hasOwn(pending.choices, action)) result = pending.choices[action];
     else throw new Error('Invalid response for this request.');
     this.rpc.respond(pending.request.id, result);
@@ -136,7 +155,9 @@ export class Interactions {
       if (typeof value !== 'string' || !value.trim() || value.length > 3000) throw new Error('Every question needs an answer.');
       answers[q.id] = { answers: [value] };
     });
-    this.rpc.respond(pending.request.id, { answers });
+    this.rpc.respond(pending.request.id, pending.mcpSchema
+      ? { action: 'accept', content: mcpFormContent(pending.mcpSchema, answers.content!.answers[0]!) }
+      : { answers });
     this.pending.delete(token);
     this.store.enqueue(pending.binding.key, { text: `Your answers were sent to ${this.rpc.name}.` });
   }
