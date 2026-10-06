@@ -10,7 +10,7 @@ import { checkCondition, type CheckCondition, type Condition } from './condition
 import type { ServerRequest } from './rpc.ts';
 
 const unattendedBrowserPolicy = `[Unattended browser policy]
-Do not use the installed Browser Use connector, browser-control/CUA, or connector file-download actions during this unattended occurrence. Use repository-owned scripts and APIs, direct HTTP, Playwright/Puppeteer, nodriver/Zendriver, or CDP tooling instead. Do not request approval merely to use connector/browser tooling. If repository-native browser automation cannot complete one subtask, record the blocker and continue all independent authorized work. This restriction does not prohibit repository-owned headless browser automation.`;
+Do not use the installed Codex Browser Use connector, browser-control/CUA, or connector file-download actions during this unattended occurrence. This restriction applies to that Codex connector, not to browser automation generally: interactive or headless browser sessions driven through repository-owned CDP, Playwright/Puppeteer, nodriver/Zendriver, or similar tooling are explicitly allowed, as are repository-owned scripts, APIs, and direct HTTP. Do not request Browser Use approval for those allowed approaches. If repository-native browser automation cannot complete one subtask, record the blocker and continue all independent authorized work.`;
 
 function browserUseApproval(request: ServerRequest): boolean {
   if (request.method !== 'mcpServer/elicitation/request') return false;
