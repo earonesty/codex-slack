@@ -30,7 +30,7 @@ function fixture(t: TestContext, postFailure = false, postDelay = 0, check?: Che
   const db = new ScheduleStore(':memory:');
   const outputs: (Message & { key: string })[] = [];
   const roots: { channel: string; text: string }[] = [];
-  const config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: dir } }, stateDir: dir, agent: { driver: 'codex' as const, command: 'unused' } };
+  const config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: dir } }, stateDir: dir, agent: { driver: 'codex' as const, command: 'unused' }, scheduledBrowserUse: false };
   const bridge = new Bridge(config, store, codex, async (binding, message) => { outputs.push({ key: binding.key, ...message }); });
   let time = Date.parse('2026-09-13T15:00:00Z');
   const scheduler = new Scheduler(bridge, db, async (channel, text) => {
@@ -77,6 +77,7 @@ test('scheduled output lands in a new bound thread and Slack replies resume that
   const run = f.db.history()[0]!;
   const started = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
   assert.deepEqual(started.startParams, { cwd: f.dir, sandbox: 'danger-full-access', approvalPolicy: 'never' });
+  assert.match(JSON.stringify(started.turns), /\[Unattended browser policy\]/);
   assert.equal(f.roots.length, 1);
   assert.equal(f.roots[0]?.channel, 'C123');
   assert.ok(run.output.includes('Reply: Check the logs'));
@@ -265,6 +266,7 @@ test('quiet is the default, including old saved definitions, and verbosity is va
   assert.equal(f.db.get(job.id)?.verbosity, 'quiet');
   assert.equal(f.db.list()[0]?.verbosity, 'quiet');
   assert.throws(() => f.scheduler.put({ ...f.job, verbosity: 'loud' }), /verbosity/);
+  assert.throws(() => f.scheduler.put({ ...f.job, scheduledBrowserUse: 'yes' }), /scheduledBrowserUse/);
 });
 
 for (const prompt of ['silent', 'silent-progress', 'empty']) {
@@ -316,6 +318,32 @@ test('quiet approvals retain the proposed diff while the Slack root is created a
   f.bridge.interactions.choose(token, 'accept');
   await until(() => f.db.run(run.id)?.status === 'completed');
   assert.ok(f.outputs.some(o => o.text === 'Approval received: accept'));
+  assert.equal(f.roots.length, 1);
+});
+
+test('scheduled Browser Use approvals are declined without blocking or posting to Slack', async t => {
+  const f = fixture(t);
+  f.config.scheduledBrowserUse = true;
+  const run = await f.scheduler.launch(f.scheduler.put({ ...f.job, prompt: 'browser-approval', scheduledBrowserUse: false }));
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  assert.equal(f.db.run(run.id)?.output.trim(), '[SILENT]');
+  assert.equal(f.roots.length, 0);
+  assert.equal(f.outputs.length, 0);
+});
+
+test('scheduled Browser Use remains interactive when enabled', async t => {
+  const f = fixture(t);
+  const job = f.scheduler.put({ ...f.job, prompt: 'browser-approval', scheduledBrowserUse: true });
+  assert.equal(job.scheduledBrowserUse, true);
+  const run = await f.scheduler.launch(job);
+  await until(() => f.outputs.some(o => o.text === 'Codex needs approval.'));
+  const approval = f.outputs.find(o => o.text === 'Codex needs approval.')!;
+  const actions = record(approval.blocks?.find(b => b.type === 'actions'));
+  const token = String(record((actions.elements as unknown[])[0]).value);
+  f.bridge.interactions.choose(token, 'decline');
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  const started = record(record(await f.rpc.request('thread/read', { threadId: f.db.run(run.id)?.thread })).thread);
+  assert.doesNotMatch(JSON.stringify(started.turns), /\[Unattended browser policy\]/);
   assert.equal(f.roots.length, 1);
 });
 

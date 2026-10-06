@@ -14,7 +14,9 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     if (pending) {
       questions.delete(message.id);
       const { thread, turn } = pending;
-      const text = message.error ? 'Question could not be delivered' : message.result.answers ? `Answer received: ${message.result.answers.q1.answers.join(' ')}` : `Approval received: ${message.result.decision}`;
+      const text = message.result?.action === 'decline' ? '[SILENT]'
+        : message.error ? 'Question could not be delivered'
+          : message.result.answers ? `Answer received: ${message.result.answers.q1.answers.join(' ')}` : `Approval received: ${message.result.decision}`;
       const item = { id: `answer-${++sequence}`, type: 'agentMessage', phase: 'final_answer', text };
       turn.items.push(item); turn.status = 'completed'; thread.status = { type: 'idle' };
       notify('serverRequest/resolved', { threadId: thread.id, requestId: message.id });
@@ -57,7 +59,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   if (method === 'thread/resume' || method === 'thread/read') { send({ id, result: { thread } }); continue; }
   if (method === 'turn/start') {
     const text = params.input[0].text;
-    const task = text.split('\n\n[Scheduled execution:')[0];
+    const task = text.split(/\n\n\[(?:Unattended browser policy|Scheduled execution:)/)[0];
     if (task === 'reject') { send({ id, error: { code: -32602, message: 'test rejection' } }); continue; }
     const turn = { id: `turn-${++sequence}`, status: 'inProgress', items: [], input: params.input };
     thread.turns.push(turn); thread.status = { type: 'active' };
@@ -72,6 +74,16 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       } });
       send({ id: requestId, method: 'item/fileChange/requestApproval', params: {
         threadId: thread.id, turnId: turn.id, itemId: 'edit', availableDecisions: ['accept', 'decline'],
+      } });
+      continue;
+    }
+    if (task === 'browser-approval') {
+      const requestId = `browser-approval-${sequence}`;
+      questions.set(requestId, { thread, turn });
+      send({ id: requestId, method: 'mcpServer/elicitation/request', params: {
+        threadId: thread.id, turnId: turn.id, serverName: 'cua_repl', mode: 'form',
+        requestedSchema: { type: 'object', properties: {} },
+        _meta: { connector_id: 'browser-use', connector_name: 'Browser use', tool_name: 'download_browser_files' },
       } });
       continue;
     }

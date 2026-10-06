@@ -73,7 +73,7 @@ This is local daemon configuration, **not** the Slack app manifest. Run `npm run
 
 The bridge resolves names to IDs internally and saves those bindings in `stateDir/identities.json`. Reusing an old handle or channel name cannot silently transfer control to a different person/channel. A renamed user/channel retains its binding while the configured name stays the same. Old configurations using `teamId`, `allowedUserIds`, and channel IDs still work.
 
-Optional fields: `stateDir` defaults to `~/.local/state/codex-slack`. The agent defaults to `{"driver":"codex","command":"codex"}`. To use Claude Code, add:
+Optional fields: `stateDir` defaults to `~/.local/state/codex-slack`. `scheduledBrowserUse` defaults to `true`; set it to `false` to keep unattended scheduled runs off Browser Use/CUA while leaving interactive conversations unchanged. The agent defaults to `{"driver":"codex","command":"codex"}`. To use Claude Code, add:
 
 ```json
 "agent": { "driver": "claude", "command": "claude" }
@@ -202,6 +202,8 @@ node bin/codex-slack-schedule.mjs history weekly-log-check
 ```
 
 Use `at` with an ISO timestamp including an offset or `Z` instead of `cron` for a one-shot task. `put` creates or replaces the full definition by stable ID. Use `pause`, `resume`, and `remove` to manage future occurrences; `run <id>` explicitly starts an extra occurrence immediately. Pause/remove do not interrupt active work. `verbosity` defaults to `"quiet"`, including existing tasks without this field. Quiet runs do not post starts or progress. A successful final answer containing only `[SILENT]` (ignoring surrounding whitespace), or an empty answer, creates no Slack messages. Other final results, failures, interruptions, questions, and approvals remain visible; human replies in an existing run thread behave normally. Codex is instructed to use `[SILENT]` only when nothing changed, no action was taken, and no error or judgment needs attention. This is an explicit marker, not a guess based on words such as “nothing pending.”
+
+When `"scheduledBrowserUse": false` is set in `config.json`, unattended occurrences are instructed not to use the Browser Use connector, browser-control/CUA, or connector file downloads. They should use repository-owned HTTP, Playwright/Puppeteer, nodriver/Zendriver, or CDP automation. If an active scheduled turn nevertheless requests Browser Use approval, the bridge declines it without opening a Slack approval thread. The daemon default is `true`; restart it after changing the setting. A task can override the daemon default with `"scheduledBrowserUse": true` or `false` in its schedule JSON, so a browser-dependent schedule can remain interactive while other unattended work is guarded. Unrelated approvals and later human follow-ups remain interactive in either mode.
 
 Set `"verbosity":"verbose"` in the task JSON to include run starts, progress, and no-op answers. `list`/`get` show the setting, and `history` retains every run and final answer even when nothing was posted to Slack. Read `get <id>` and save the complete definition with `put` to change verbosity; this does not run the task or move its next occurrence.
 
