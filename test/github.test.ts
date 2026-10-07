@@ -17,8 +17,9 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const store = new GithubStore(':memory:'); t.after(() => store.close());
   const inputs: unknown[] = []; const dispatches: unknown[] = []; const posts: unknown[] = []; const updates: unknown[] = [];
   const seen = new Set<string>();
+  const active = new Map<string, string>();
   const bridge = { config: { github: config, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: tmpdir() } } },
-    store: { get: () => undefined }, agent: { active: new Map() }, ingest: (_team: unknown, event: { ts: string }) => {
+    store: { get: () => undefined }, agent: { active }, get activeSize() { return active.size; }, ingest: (_team: unknown, event: { ts: string }) => {
       if (seen.has(event.ts)) return false; seen.add(event.ts); inputs.push(event); return true;
     }, ingestSystem: (_team: unknown, event: { ts: string }, dispatch: unknown) => {
       if (seen.has(event.ts)) return false; seen.add(event.ts); inputs.push(event); dispatches.push(dispatch); return true;
@@ -31,9 +32,11 @@ function fixture(t: { after: (fn: () => void) => void }) {
 test('feed configuration validates destination and operating limits', () => {
   const base = { teamId: 'T123', allowedUserIds: ['U123'], root: tmpdir(), channels: { C123: { cwd: tmpdir() } } };
   assert.deepEqual(parseConfig({ ...base, github: config }).github, config);
+  assert.equal(parseConfig({ ...base, github: { ...config, codexHome: tmpdir() } }).github?.codexHome, tmpdir());
   for (const change of [{ channel: 'C404' }, { owners: [] }, { include: ['bad/path/extra'] }, { intervalSeconds: 0 }, { batchSize: 11 }]) {
     assert.throws(() => parseConfig({ ...base, github: { ...config, ...change } }));
   }
+  assert.throws(() => parseConfig({ ...base, github: { ...config, codexHome: '/does/not/exist' } }));
   assert.throws(() => parseConfig({ ...base, agent: { driver: 'claude', command: 'claude' }, github: config }), /Codex driver/);
 });
 
@@ -107,7 +110,7 @@ test('batch limit and active work bound automatic model launches', async t => {
   await feed.tick(); assert.equal(f.posts.length, 3);
   assert.match(JSON.stringify(f.inputs[2]), /pull request/);
   assert.deepEqual(f.dispatches, Array(3).fill({
-    codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true,
+    codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true, isolated: true,
   }));
 });
 

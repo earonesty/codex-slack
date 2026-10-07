@@ -31,11 +31,15 @@ async function main(): Promise<void> {
   const agent: Agent = config.agent.driver === 'claude'
     ? new Claude(config.agent.command)
     : new Codex(new Rpc(config.agent.command));
+  const triageAgent = config.github?.codexHome
+    ? new Codex(new Rpc(config.agent.command, ['app-server'], 30_000, { ...process.env, CODEX_HOME: config.github.codexHome }))
+    : undefined;
   if (process.argv.includes('--check')) {
     try {
       await agent.check();
-      console.log(`Connected to ${directory.teamName}: ${Object.keys(config.channels).length} channel bindings validated. ${agent.name} authentication check passed. No model turn was started.`);
-    } finally { agent.close(); }
+      await triageAgent?.check();
+      console.log(`Connected to ${directory.teamName}: ${Object.keys(config.channels).length} channel bindings validated. ${agent.name}${triageAgent ? ' and isolated triage' : ''} authentication ${triageAgent ? 'checks' : 'check'} passed. No model turn was started.`);
+    } finally { agent.close(); triageAgent?.close(); }
     return;
   }
   const appToken = process.env.SLACK_APP_TOKEN;
@@ -66,7 +70,7 @@ async function main(): Promise<void> {
       text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false, parse: 'none' });
   }, async (binding, status) => {
     await app.client.assistant.threads.setStatus({ channel_id: binding.channel, thread_ts: binding.root, status });
-  }, files => attachments.prepare(files));
+  }, files => attachments.prepare(files), triageAgent);
   const onboarding = new Onboarding(config, store, async (channel, message) => {
     await app.client.chat.postMessage({ channel, text: message.text, blocks: message.blocks,
       unfurl_links: false, unfurl_media: false, parse: 'none' });
@@ -207,6 +211,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { void stop(); });
   try {
     await agent.start();
+    await triageAgent?.start();
     for (const channel of directory.channels.filter(channel => channel.joined)) {
       await onboarding.ask(config.teamId, channel.id);
     }
@@ -219,7 +224,7 @@ async function main(): Promise<void> {
     console.log(`Codex Slack listening with ${agent.name} in ${Object.keys(config.channels).length} configured channels.`);
   } catch (error) {
     github?.stop(); scheduler.stop(); control?.close();
-    agent.close(); githubStore?.close(); scheduleStore.close(); store.close(); lease.close();
+    agent.close(); triageAgent?.close(); githubStore?.close(); scheduleStore.close(); store.close(); lease.close();
     await app.stop().catch(() => {});
     throw error;
   }

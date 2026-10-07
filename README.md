@@ -126,6 +126,7 @@ Optionally bind a dedicated Slack channel to an existing workspace directory and
 ```json
 "github": {
   "channel": "#github-maintainer",
+  "codexHome": "~/.codex-triage",
   "owners": ["your-account", "your-organization"],
   "include": ["your-account/maintained-fork"],
   "exclude": [],
@@ -203,14 +204,29 @@ approved mutating tools or credentials to this workload unless that access is pa
 your intended trust boundary. `skipTriage` can suppress automatic investigation for
 repositories, authors, or content that should require a human instruction first.
 
-For stronger separation, run a dedicated bridge deployment with `CODEX_HOME` pointing
-to a separate Codex home that contains only the skills, MCP servers, apps, credentials,
-and read-only diagnostic tools intended for triage. Set `CODEX_HOME` in the service
-environment before the daemon starts. A Codex home applies to the app-server process,
-so it currently affects all Codex sessions in that daemon, not only feed turns; use a
-separate Slack app token and state directory if ordinary conversations need a broader
-Codex configuration. Per-feed `CODEX_HOME` selection would require a second app-server
-and is not supported by this release.
+For stronger separation, set `github.codexHome` to an existing dedicated Codex home
+that contains only the skills, MCP servers, apps, credentials, and diagnostic tools
+intended for automatic triage. The bridge starts a second Codex app-server with that
+`CODEX_HOME`; automatic feed turns use it, while human replies and all other Slack work
+continue through the ordinary Codex installation. The two processes share the bound
+project directory, but the triage process does not load user-level configuration,
+session history, home-level skills, apps, or MCP connections from the ordinary home.
+Project-local instructions and `.codex` configuration in the bound checkout still
+apply to both processes.
+
+Create and authenticate the home before starting the daemon, then add only the tools
+you intend to trust with public issue and pull-request content:
+
+```sh
+mkdir -p ~/.codex-triage
+CODEX_HOME=~/.codex-triage codex login
+```
+
+An empty triage `config.toml` still provides local read-only checkout inspection and
+the persisted GitHub snapshot supplied by the feed. Add narrowly scoped read-only
+GitHub or diagnostic tools there only when they improve triage. `npm run doctor`
+checks authentication for both Codex homes. Restart after changing `codexHome` or its
+tool configuration.
 
 `batchSize` (1–10, default 3) limits new assessments per polling cycle and pauses
 launches while that many agent turns are active; backlog drains gradually. Feed

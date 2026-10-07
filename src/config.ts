@@ -5,7 +5,7 @@ import path from 'node:path';
 export type Channel = { cwd: string };
 export type AgentConfig = { driver: 'codex' | 'claude'; command: string };
 export type GithubTriageSkipRule = Partial<Record<'author' | 'title' | 'repo' | 'label' | 'body', string>>;
-export type GithubConfig = { channel: string; owners: string[]; include: string[]; exclude: string[]; intervalSeconds: number; batchSize: number; skipTriage?: GithubTriageSkipRule[]; excludePullRequestAuthors?: string[] };
+export type GithubConfig = { channel: string; owners: string[]; include: string[]; exclude: string[]; intervalSeconds: number; batchSize: number; codexHome?: string; skipTriage?: GithubTriageSkipRule[]; excludePullRequestAuthors?: string[] };
 export type Config = {
   root: string;
   teamId: string;
@@ -75,6 +75,12 @@ export function parseConfig(value: unknown): Config {
     if (!Number.isInteger(intervalSeconds) || Number(intervalSeconds) < 60) throw new Error('github.intervalSeconds must be an integer >= 60');
     if (!Number.isInteger(batchSize) || Number(batchSize) < 1 || Number(batchSize) > 10) throw new Error('github.batchSize must be between 1 and 10');
     github = { channel: feed.channel, owners, include, exclude, intervalSeconds: Number(intervalSeconds), batchSize: Number(batchSize) };
+    if (feed.codexHome !== undefined) {
+      if (typeof feed.codexHome !== 'string' || !feed.codexHome.trim()) throw new Error('Invalid github.codexHome');
+      const codexHome = realpathSync(expandPath(feed.codexHome));
+      if (!statSync(codexHome).isDirectory()) throw new Error('github.codexHome must be a directory');
+      github.codexHome = codexHome;
+    }
     if (feed.excludePullRequestAuthors !== undefined) {
       if (!Array.isArray(feed.excludePullRequestAuthors)) throw new Error('Invalid github.excludePullRequestAuthors');
       github.excludePullRequestAuthors = names('excludePullRequestAuthors', /^[a-z0-9][a-z0-9-]*(?:\[bot\])?$/i);

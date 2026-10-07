@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 
 export type Binding = { key: string; channel: string; root: string; cwd: string; thread: string | null };
-export type AgentDispatch = { codexPermissions?: CodexPermissions; transient?: boolean };
+export type AgentDispatch = { codexPermissions?: CodexPermissions; transient?: boolean; isolated?: boolean };
 export type Incoming = Binding & { id: string; user: string; text: string; unsupported: boolean; files?: Attachment[]; agentDispatch?: AgentDispatch };
 export type Delivery = { id: string; key: string; payload: string };
 export type ChannelSetup = { team: string; channel: string; token: string; cwd: string | null; prompted: number };

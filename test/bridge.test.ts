@@ -134,25 +134,30 @@ test('top-level messages create sessions, replies reuse them, and duplicate even
 });
 
 test('system turns enforce durable permissions without capturing later human follow-ups', async t => {
-  const rpc = new Rpc(process.execPath, [fake]); const codex = new Codex(rpc); const store = new Store(':memory:');
+  const rpc = new Rpc(process.execPath, [fake]); const codex = new Codex(rpc);
+  const triageRpc = new Rpc(process.execPath, [fake], 30_000, { ...process.env, FAKE_CODEX_PREFIX: 'triage-' });
+  const triageCodex = new Codex(triageRpc);
+  const store = new Store(':memory:');
   const outputs: string[] = [];
-  const bridge = new Bridge(config, store, codex, async (_, message) => { outputs.push(message.text); });
+  const bridge = new Bridge(config, store, codex, async (_, message) => { outputs.push(message.text); }, undefined, undefined, triageCodex);
   t.after(async () => { await bridge.stop(); store.close(); });
   const event = { user: 'U123', channel: 'C123', ts: '1.1', text: 'automatic snapshot' };
   bridge.ingestSystem('T123', event, {
-    codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true,
+    codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true, isolated: true,
   });
   await until(() => outputs.includes('Reply: automatic snapshot'));
   assert.equal(store.get('T123:C123:1.1')?.thread, null);
-  const restricted = (await codex.list(tmpdir())).threads[0]!;
-  const restrictedData = await rpc.request('thread/read', { threadId: restricted.id }) as { thread: { startParams: unknown } };
+  assert.equal((await codex.list(tmpdir())).threads.length, 0);
+  const restricted = (await triageCodex.list(tmpdir())).threads[0]!;
+  const restrictedData = await triageRpc.request('thread/read', { threadId: restricted.id }) as { thread: { startParams: unknown } };
   assert.deepEqual(restrictedData.thread.startParams,
     { cwd: tmpdir(), sandbox: 'read-only', approvalPolicy: 'never' });
 
   bridge.ingest('T123', { ...event, ts: '2.1', thread_ts: '1.1', text: 'authorized follow-up' });
   await until(() => outputs.includes('Reply: authorized follow-up'));
   const ordinary = store.get('T123:C123:1.1')?.thread;
-  assert.ok(ordinary && ordinary !== restricted.id);
+  assert.ok(ordinary);
+  assert.equal((await triageCodex.list(tmpdir())).threads.length, 1);
   const ordinaryData = await rpc.request('thread/read', { threadId: ordinary }) as { thread: { startParams: unknown } };
   assert.deepEqual(ordinaryData.thread.startParams, { cwd: tmpdir() });
 });

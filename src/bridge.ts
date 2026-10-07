@@ -30,13 +30,14 @@ export class Bridge {
   private outputRunning = false;
   private stopped = false;
   private running = new Set<string>();
+  private isolatedThreads = new Set<string>();
   private status: ThreadStatus;
   constructor(readonly config: Config, readonly store: Store, readonly agent: Agent,
     private post: (binding: Binding, message: Message) => Promise<void>,
     setStatus: (binding: Binding, status: string) => Promise<void> = async () => {},
     private prepareAttachments: (files: Attachment[]) => Promise<LocalAttachment[]> = async () => {
       throw new AttachmentError('Attachment downloads are not configured. Restart the updated bridge and resend.');
-    }) {
+    }, private isolatedAgent?: Agent) {
     this.status = new ThreadStatus(setStatus);
     this.interactions = new Interactions(agent, store);
     agent.on('notification', (method: string, params: Record<string, unknown>) => {
@@ -67,17 +68,42 @@ export class Bridge {
       else void receive();
     });
     agent.on('disconnect', () => {
-      void this.status.clear();
       this.interactions.clear();
-      if (!this.stopped) for (const thread of this.running) {
+      for (const thread of this.running) {
+        if (this.isolatedThreads.has(thread)) continue;
         const binding = this.store.byThread(thread);
-        if (binding) this.say(binding.key, `The ${agent.name} connection ended during work. Your session is saved; send !status before continuing. Work was not automatically restarted.`);
+        if (binding) {
+          this.status.set(binding, false);
+          if (!this.stopped) this.say(binding.key, `The ${agent.name} connection ended during work. Your session is saved; send !status before continuing. Work was not automatically restarted.`);
+        }
+        this.running.delete(thread);
       }
-      this.running.clear();
       void this.flush();
       // Session IDs remain durable; next input resumes via the public protocol.
     });
+    if (isolatedAgent && isolatedAgent !== agent) {
+      isolatedAgent.on('notification', (method: string, params: Record<string, unknown>) => {
+        try { this.notification(method, params); }
+        catch { console.error(`Could not record an isolated ${isolatedAgent.name} notification`); }
+      });
+      isolatedAgent.on('request', (request: ServerRequest) => {
+        isolatedAgent.reject(request.id, 'Automatic triage does not accept interactive requests');
+      });
+      isolatedAgent.on('disconnect', () => {
+        for (const thread of this.running) {
+          if (!this.isolatedThreads.has(thread)) continue;
+          const binding = this.store.byThread(thread);
+          if (binding) {
+            this.status.set(binding, false);
+            if (!this.stopped) this.say(binding.key, `The isolated ${isolatedAgent.name} connection ended during automatic triage. Work was not automatically restarted.`);
+          }
+          this.running.delete(thread); this.isolatedThreads.delete(thread);
+        }
+        void this.flush();
+      });
+    }
   }
+  get activeSize(): number { return this.agent.active.size + (this.isolatedAgent?.active.size ?? 0); }
   start(): void { this.store.recover(this.agent.name); this.drain(); void this.flush(); }
   /** Drain a newly queued local follow-up without replaying crash recovery. */
   wake(): void { this.drain(); }
@@ -94,7 +120,7 @@ export class Bridge {
       if (!binding || !channels.includes(binding.channel)) continue;
       this.status.set(binding, false);
       this.interactions.clear(thread);
-      try { await this.agent.interrupt(thread); }
+      try { await (this.isolatedThreads.has(thread) ? this.isolatedAgent ?? this.agent : this.agent).interrupt(thread); }
       catch { console.error('Could not confirm interruption of disabled channel work.'); }
     }
   }
@@ -102,6 +128,7 @@ export class Bridge {
     this.stopped = true;
     await this.status.clear();
     this.agent.close();
+    if (this.isolatedAgent && this.isolatedAgent !== this.agent) this.isolatedAgent.close();
     await Promise.allSettled([...this.queues.values(), ...this.events.values()]);
   }
   ingest(team: unknown, value: unknown): boolean {
@@ -170,8 +197,10 @@ export class Bridge {
       } else {
         const files = message.files?.length ? await this.prepareAttachments(message.files) : [];
         if (this.stopped || !this.enabled(binding)) { this.store.mark(message.id, 'failed'); return; }
+        const agent = message.agentDispatch?.isolated ? this.isolatedAgent ?? this.agent : this.agent;
         if (!binding.thread) {
-          binding.thread = await this.agent.create(binding.cwd, { codexPermissions: message.agentDispatch?.codexPermissions });
+          binding.thread = await agent.create(binding.cwd, { codexPermissions: message.agentDispatch?.codexPermissions });
+          if (agent === this.isolatedAgent) this.isolatedThreads.add(binding.thread);
           if (message.agentDispatch?.transient) this.store.bindTransient(binding.key, binding.thread);
           else {
             this.store.bind(binding.key, binding.thread);
@@ -179,7 +208,7 @@ export class Bridge {
           }
         }
         if (!this.enabled(binding)) { this.store.mark(message.id, 'failed'); return; }
-        await this.agent.input(binding.thread, binding.cwd, message.text, files);
+        await agent.input(binding.thread, binding.cwd, message.text, files);
       }
       this.store.mark(message.id, 'done');
     } catch (error) {
@@ -272,7 +301,8 @@ export class Bridge {
     if (method === 'turn/completed') this.status.set(binding, false);
     if (!this.enabled(binding)) {
       this.interactions.clear(thread);
-      if (method === 'turn/started') void this.agent.interrupt(thread).catch(() => console.error('Could not interrupt disabled channel work.'));
+      if (method === 'turn/started') void (this.isolatedThreads.has(thread) ? this.isolatedAgent ?? this.agent : this.agent)
+        .interrupt(thread).catch(() => console.error('Could not interrupt disabled channel work.'));
       return;
     }
     if (method === 'turn/started' && !this.stopped) this.status.set(binding, true);
@@ -289,6 +319,7 @@ export class Bridge {
         this.say(binding.key, turn.status === 'failed' ? `${this.agent.name} turn failed. ${turnError(turn).summary} Use !status to inspect the session.` : `${this.agent.name} turn interrupted.`, `${thread}:${String(turn.id)}:status`);
       }
       this.store.releaseTransient(thread);
+      this.isolatedThreads.delete(thread);
     }
     void this.flush();
   }

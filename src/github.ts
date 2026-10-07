@@ -211,7 +211,7 @@ export class GithubFeed {
           continue;
         }
         if (item.state !== 'open' && !row.root) continue;
-        if (launched >= this.config.batchSize || (!skipTriage && this.bridge.agent.active.size >= this.config.batchSize)) continue;
+        if (launched >= this.config.batchSize || (!skipTriage && this.bridge.activeSize >= this.config.batchSize)) continue;
         if (!row.root) {
           if (!this.store.claim(row.id)) continue;
           try {
@@ -228,7 +228,7 @@ export class GithubFeed {
         // Same durable inbox path as human messages; one synthetic input per card.
         if (!skipTriage) this.bridge.ingestSystem(this.bridge.config.teamId, { channel: this.config.channel, ts: row.root,
           thread_ts: row.root, user: this.bridge.config.allowedUserIds[0], text: triagePrompt(item) }, {
-          codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true,
+          codexPermissions: { sandbox: 'read-only', approvalPolicy: 'never' }, transient: true, isolated: true,
         });
         this.store.sent(row.id, displayed); launched++;
       }
