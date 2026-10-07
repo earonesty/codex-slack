@@ -9,3 +9,4 @@ config.json
 *.db*
 *.log
 coverage/
+.scratch/

@@ -18,6 +18,7 @@ import { ScheduleStore } from './schedule-store.ts';
 import { Scheduler } from './scheduler.ts';
 import { listenControl } from './control.ts';
 import { recoverRestart } from './restart.ts';
+import { GithubFeed, GithubStore } from './github.ts';
 import type { Server } from 'node:net';
 
 async function main(): Promise<void> {
@@ -30,11 +31,15 @@ async function main(): Promise<void> {
   const agent: Agent = config.agent.driver === 'claude'
     ? new Claude(config.agent.command)
     : new Codex(new Rpc(config.agent.command));
+  const triageAgent = config.github?.codexHome
+    ? new Codex(new Rpc(config.agent.command, ['app-server'], 30_000, { ...process.env, CODEX_HOME: config.github.codexHome }))
+    : undefined;
   if (process.argv.includes('--check')) {
     try {
       await agent.check();
-      console.log(`Connected to ${directory.teamName}: ${Object.keys(config.channels).length} channel bindings validated. ${agent.name} authentication check passed. No model turn was started.`);
-    } finally { agent.close(); }
+      await triageAgent?.check();
+      console.log(`Connected to ${directory.teamName}: ${Object.keys(config.channels).length} channel bindings validated. ${agent.name}${triageAgent ? ' and isolated triage' : ''} authentication ${triageAgent ? 'checks' : 'check'} passed. No model turn was started.`);
+    } finally { agent.close(); triageAgent?.close(); }
     return;
   }
   const appToken = process.env.SLACK_APP_TOKEN;
@@ -65,7 +70,7 @@ async function main(): Promise<void> {
       text: message.text, blocks: message.blocks, unfurl_links: false, unfurl_media: false, parse: 'none' });
   }, async (binding, status) => {
     await app.client.assistant.threads.setStatus({ channel_id: binding.channel, thread_ts: binding.root, status });
-  }, files => attachments.prepare(files));
+  }, files => attachments.prepare(files), triageAgent);
   const onboarding = new Onboarding(config, store, async (channel, message) => {
     await app.client.chat.postMessage({ channel, text: message.text, blocks: message.blocks,
       unfurl_links: false, unfurl_media: false, parse: 'none' });
@@ -78,13 +83,23 @@ async function main(): Promise<void> {
     if (!result.ts) throw new Error('Slack returned no message timestamp');
     return result.ts;
   });
+  const githubStore = config.github ? new GithubStore(path.join(config.stateDir, 'github.sqlite')) : undefined;
+  const github = config.github && githubStore ? new GithubFeed(config.github, githubStore, bridge,
+    async message => {
+      const result = await app.client.chat.postMessage({ channel: config.github!.channel, text: message.text,
+        blocks: message.blocks, unfurl_links: false, unfurl_media: false, parse: 'none' });
+      if (!result.ts) throw new Error('Slack returned no message timestamp');
+      return result.ts;
+    }, async (root, message) => {
+      await app.client.chat.update({ channel: config.github!.channel, ts: root, text: message.text, blocks: message.blocks });
+    }) : undefined;
   let control: Server | undefined;
   app.event('member_joined_channel', async ({ body, event, context }) => {
     await onboarding.joined(record(body).team_id, event, directory.botUserId ?? context.botUserId ?? '');
   });
   app.event('message', async ({ body, event }) => {
     const team = record(body).team_id;
-    if (!await onboarding.message(team, event)) bridge.ingest(team, event);
+    if (!await onboarding.message(team, event)) bridge.ingest(team, github?.contextualize(event) ?? event);
   });
   app.action('tc:connect', async ({ ack, body, action, client }) => {
     await ack();
@@ -101,6 +116,7 @@ async function main(): Promise<void> {
         text: error instanceof Error ? error.message : `Could not connect that ${agent.name} session.` });
     }
   });
+  app.action('github:open', async ({ ack }) => { await ack(); });
   app.action('bind:open', async ({ ack, body, action, client }) => {
     await ack();
     const payload = record(body);
@@ -180,12 +196,14 @@ async function main(): Promise<void> {
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    github?.stop();
     scheduler.stop();
     control?.close();
     const timeout = setTimeout(() => process.exit(0), 12_000);
     timeout.unref();
     await bridge.stop();
     await app.stop();
+    githubStore?.close(); scheduleStore.close(); store.close(); lease.close();
     // In-flight Slack sends are journaled as uncertain if shutdown cuts them short.
     process.exit(0);
   };
@@ -193,6 +211,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { void stop(); });
   try {
     await agent.start();
+    await triageAgent?.start();
     for (const channel of directory.channels.filter(channel => channel.joined)) {
       await onboarding.ask(config.teamId, channel.id);
     }
@@ -201,10 +220,11 @@ async function main(): Promise<void> {
     recoverRestart(bridge);
     bridge.start();
     scheduler.start();
+    github?.start();
     console.log(`Codex Slack listening with ${agent.name} in ${Object.keys(config.channels).length} configured channels.`);
   } catch (error) {
-    scheduler.stop(); control?.close();
-    agent.close(); scheduleStore.close(); store.close(); lease.close();
+    github?.stop(); scheduler.stop(); control?.close();
+    agent.close(); triageAgent?.close(); githubStore?.close(); scheduleStore.close(); store.close(); lease.close();
     await app.stop().catch(() => {});
     throw error;
   }

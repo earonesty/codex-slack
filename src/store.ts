@@ -1,9 +1,11 @@
 import type { Attachment } from './attachments.ts';
+import type { CodexPermissions } from './agent.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 
 export type Binding = { key: string; channel: string; root: string; cwd: string; thread: string | null };
-export type Incoming = Binding & { id: string; user: string; text: string; unsupported: boolean; files?: Attachment[] };
+export type AgentDispatch = { codexPermissions?: CodexPermissions; transient?: boolean; isolated?: boolean };
+export type Incoming = Binding & { id: string; user: string; text: string; unsupported: boolean; files?: Attachment[]; agentDispatch?: AgentDispatch };
 export type Delivery = { id: string; key: string; payload: string };
 export type ChannelSetup = { team: string; channel: string; token: string; cwd: string | null; prompted: number };
 export type Restart = { id: string; thread: string; key: string; user: string; invocation: string;
@@ -25,6 +27,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS inbox (
         id TEXT PRIMARY KEY, key TEXT NOT NULL, user TEXT NOT NULL, text TEXT NOT NULL,
         unsupported INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending'
+      );
+      CREATE TABLE IF NOT EXISTS transient_threads (
+        thread TEXT PRIMARY KEY, key TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS outbox (
         id TEXT PRIMARY KEY, key TEXT NOT NULL, payload TEXT NOT NULL,
@@ -50,6 +55,9 @@ export class Store {
     `);
     if (!this.db.prepare('PRAGMA table_info(inbox)').all().some(column => column.name === 'files')) {
       this.db.exec("ALTER TABLE inbox ADD COLUMN files TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!this.db.prepare('PRAGMA table_info(inbox)').all().some(column => column.name === 'agentDispatch')) {
+      this.db.exec("ALTER TABLE inbox ADD COLUMN agentDispatch TEXT NOT NULL DEFAULT '{}'");
     }
   }
   close(): void { this.db.close(); }
@@ -134,10 +142,19 @@ export class Store {
     return this.db.prepare('SELECT * FROM bindings WHERE key=?').get(key) as Binding | undefined;
   }
   byThread(thread: string): Binding | undefined {
-    return this.db.prepare('SELECT * FROM bindings WHERE thread=?').get(thread) as Binding | undefined;
+    return (this.db.prepare('SELECT * FROM bindings WHERE thread=?').get(thread)
+      ?? this.db.prepare('SELECT b.* FROM transient_threads t JOIN bindings b ON b.key=t.key WHERE t.thread=?').get(thread)) as Binding | undefined;
   }
   bind(key: string, thread: string): void {
     this.db.prepare('UPDATE bindings SET thread=? WHERE key=?').run(thread, key);
+  }
+  /** Route a restricted one-turn session without making it the Slack thread's resumable session. */
+  bindTransient(key: string, thread: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO transient_threads(thread,key) VALUES(?,?)').run(thread, key);
+  }
+  /** Stop routing notifications for a completed restricted automatic session. */
+  releaseTransient(thread: string): void {
+    this.db.prepare('DELETE FROM transient_threads WHERE thread=?').run(thread);
   }
   addThreadChoice(key: string, thread: string, now = Date.now()): string {
     const token = randomUUID();
@@ -173,15 +190,16 @@ export class Store {
     try {
       this.db.prepare('INSERT OR IGNORE INTO bindings(key,channel,root,cwd) VALUES(?,?,?,?)')
         .run(message.key, message.channel, message.root, message.cwd);
-      const result = this.db.prepare('INSERT OR IGNORE INTO inbox(id,key,user,text,unsupported,files) VALUES(?,?,?,?,?,?)')
-        .run(message.id, message.key, message.user, message.text, Number(message.unsupported), JSON.stringify(message.files ?? []));
+      const result = this.db.prepare('INSERT OR IGNORE INTO inbox(id,key,user,text,unsupported,files,agentDispatch) VALUES(?,?,?,?,?,?,?)')
+        .run(message.id, message.key, message.user, message.text, Number(message.unsupported), JSON.stringify(message.files ?? []), JSON.stringify(message.agentDispatch ?? {}));
       this.db.exec('COMMIT');
       return result.changes > 0;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   pending(): Incoming[] {
-    return this.db.prepare(`SELECT b.*, i.id, i.user, i.text, i.unsupported, i.files FROM inbox i
-      JOIN bindings b ON b.key=i.key WHERE i.status='pending' ORDER BY i.rowid`).all().map(row => ({ ...row, files: JSON.parse(String(row.files)) })) as unknown as Incoming[];
+    return this.db.prepare(`SELECT b.*, i.id, i.user, i.text, i.unsupported, i.files, i.agentDispatch FROM inbox i
+      JOIN bindings b ON b.key=i.key WHERE i.status='pending' ORDER BY i.rowid`).all().map(row => ({ ...row,
+      files: JSON.parse(String(row.files)), agentDispatch: JSON.parse(String(row.agentDispatch)) })) as unknown as Incoming[];
   }
   inboxStatus(id: string): string | undefined {
     return this.db.prepare('SELECT status FROM inbox WHERE id=?').get(id)?.status as string | undefined;
@@ -210,5 +228,7 @@ export class Store {
       this.deliveryStatus(String(output.id), 'failed');
       this.enqueue(String(output.key), { text: 'A Slack reply had an uncertain delivery during restart. Use `!status` to inspect the session; the reply has not been duplicated.' });
     }
+    // Restricted automatic sessions are never resumed or attached to human replies.
+    this.db.exec('DELETE FROM transient_threads');
   }
 }

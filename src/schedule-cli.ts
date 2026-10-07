@@ -41,6 +41,8 @@ Cron sets check frequency; at checks retry every condition.pollSeconds (default 
 condition.expiresAt defaults to 7 days; set an ISO timestamp with timezone if needed.
 Use "verbosity":"verbose" to include starts, progress, and no-op results.
 Use "scheduledBrowserUse":true or false to override the daemon default for one task.
+Codex permissions inherit machine defaults. Optional codexPermissions overrides a new
+Codex session: {"sandbox":"read-only","approvalPolicy":"on-request"}.
 Agent errors, questions, and approvals remain visible in quiet mode. Condition failures
 are recorded in get/list without firing the task. History retains every fired run.
 enabled defaults to true for new tasks. put replaces the full task definition.

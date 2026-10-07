@@ -119,6 +119,123 @@ Existing installations need the **files:read** bot scope: apply the updated `sla
 
 Downloads are private (0600 files in per-message 0700 directories) under `stateDir/attachments`. They remain available for session follow-ups and restarts. They are not automatically pruned; archive or remove them only when their sessions no longer need them. The bot token is used only to retrieve files from Slack and is never passed to Codex.
 
+## GitHub maintainer feed
+
+Optionally bind a dedicated Slack channel to an existing workspace directory and add the following configuration. The feed requires the Codex driver because its automatic turns use Codex's enforced read-only sandbox:
+
+```json
+"github": {
+  "channel": "#github-maintainer",
+  "codexHome": "~/.codex-triage",
+  "owners": ["your-account", "your-organization"],
+  "include": ["your-account/maintained-fork"],
+  "exclude": [],
+  "excludePullRequestAuthors": ["your-account"],
+  "skipTriage": [
+    { "author": "^(dependabot|pixeebot)(\\[bot\\])?$" }
+  ],
+  "intervalSeconds": 300,
+  "batchSize": 3
+}
+```
+
+The bot must already have joined the channel, which must also appear in `channels`.
+Install and authenticate `gh` for the daemon's OS user. The feed uses `gh api` with
+read-only requests, keeping credentials out of model prompts and bridge state.
+Discovery includes public, non-archived, non-fork repositories under `owners` where
+the authenticated account has admin or maintain permission. `include` explicitly
+adds maintained forks or repositories outside those owners; the same visibility
+and permission checks apply. `exclude` always wins. Discovery refreshes hourly.
+
+`excludePullRequestAuthors` excludes PRs by exact, case-insensitive GitHub login
+from new cards, card updates, and automatic triage, including already queued backlog.
+Issues by those authors are unaffected. Existing Slack cards remain available for
+manual replies. Restart after edits.
+
+`skipTriage` accepts case-insensitive JavaScript regex patterns for `author`, `title`,
+`repo`, `label`, or `body`. Any matching rule skips the item; all fields within a
+rule must match. `label` matches any one of an item's labels. For example,
+`{"repo":"^your-org/", "title":"^chore:"}` skips chore titles only in that
+organization. Use pattern strings without `/.../` delimiters; JSON backslashes
+must be doubled. Invalid regexes or unknown fields fail configuration validation.
+Matches suppress only automatic triage, including already queued backlog. Matching
+items still get cards and card updates in the feed, marked as skipped for automatic
+triage. Reply in any thread to request triage or other work manually. Previously
+triaged items are not triaged again when filters change. Restart after edits.
+
+Every five minutes by default, the feed backfills open issues and PRs, then tracks
+updated items (including closed ones). [GitHub's issues endpoint includes PRs](https://docs.github.com/en/rest/issues/issues).
+Each item has one Slack card/thread; subsequent updates edit the card without
+repeating automatic triage. The automatic assessment uses the persisted title,
+description, labels, author, state, and update timestamp as its starting context.
+It may inspect the bound checkout and use configured read-only diagnostic tools when
+that materially improves the assessment. It reports missing evidence or uncertainty.
+Reviews/checks that do not change the issue's `updated_at` are not standalone feed
+events.
+
+New cards start transient Codex sessions through the existing durable inbox with
+`sandbox:"read-only"` and `approvalPolicy:"never"` enforced. The model receives the
+persisted item snapshot and may perform read-only diagnosis with the checkout and
+tools available to that Codex installation. It is instructed not to use tools that
+create, update, delete, or send data outside the configured Slack conversation.
+The restricted session is used only for that automatic turn and is never attached
+as the Slack conversation's resumable session. Public GitHub data remains untrusted
+input. A later human reply starts an ordinary session with the item's URL and context;
+it follows the operator's normal Codex policy.
+Posting GitHub replies, changing labels, closing, pushing, creating PRs, or merging
+still requires that explicit operator instruction. Reply naturally, for example
+“draft a response,” “post that response,” “close as duplicate of #12,” or “fix it
+and open a PR.” Existing operator authorization, interactive approvals, `!stop`,
+`!status`, and restart recovery apply.
+
+### Automatic-triage trust boundary
+
+Codex Slack is a personal/operator bridge, not a multi-tenant service. Automatic
+triage deliberately trades isolation for useful diagnosis: public GitHub content can
+cause Codex to read the bound project and invoke the diagnostic tools enabled in its
+effective configuration. The configured Slack channel is the reporting boundary.
+Treat every member who can read that channel, the bound workspace, and every tool or
+MCP server exposed to Codex as mutually trusted for this project.
+
+The enforced read-only sandbox prevents workspace modification, and `never` prevents
+the automatic turn from stopping to request broader approval. Those settings do not
+turn off tools or make a write-capable connector read-only. Do not expose automatically
+approved mutating tools or credentials to this workload unless that access is part of
+your intended trust boundary. `skipTriage` can suppress automatic investigation for
+repositories, authors, or content that should require a human instruction first.
+
+For stronger separation, set `github.codexHome` to an existing dedicated Codex home
+that contains only the skills, MCP servers, apps, credentials, and diagnostic tools
+intended for automatic triage. The bridge starts a second Codex app-server with that
+`CODEX_HOME`; automatic feed turns use it, while human replies and all other Slack work
+continue through the ordinary Codex installation. The two processes share the bound
+project directory, but the triage process does not load user-level configuration,
+session history, home-level skills, apps, or MCP connections from the ordinary home.
+Project-local instructions and `.codex` configuration in the bound checkout still
+apply to both processes.
+
+Create and authenticate the home before starting the daemon, then add only the tools
+you intend to trust with public issue and pull-request content:
+
+```sh
+mkdir -p ~/.codex-triage
+CODEX_HOME=~/.codex-triage codex login
+```
+
+An empty triage `config.toml` still provides local read-only checkout inspection and
+the persisted GitHub snapshot supplied by the feed. Add narrowly scoped read-only
+GitHub or diagnostic tools there only when they improve triage. `npm run doctor`
+checks authentication for both Codex homes. Restart after changing `codexHome` or its
+tool configuration.
+
+`batchSize` (1–10, default 3) limits new assessments per polling cycle and pauses
+launches while that many agent turns are active; backlog drains gradually. Feed
+state and per-repository cursors persist in `stateDir/github.sqlite`. Failed reads
+retain their cursor. Unacknowledged Slack posts remain `uncertain` and are never
+automatically reposted; inspect the service journal and channel before manually
+resolving them. Failed/ambiguous card edits are logged and wait for a newer GitHub
+update. Restart after changing the configuration.
+
 ## Scheduled Codex work
 
 Schedules accept an optional executable `condition` and an optional existing
@@ -209,6 +326,8 @@ Set `"verbosity":"verbose"` in the task JSON to include run starts, progress, an
 
 The saved prompt defines the user's authorized task; scheduling does not override Codex's permissions or project instructions.
 
+Codex jobs inherit the machine's effective permissions by default, including `approvals_reviewer`. To explicitly override a particular job, add `"codexPermissions":{"sandbox":"read-only","approvalPolicy":"on-request"}` to its JSON. Either field may be omitted to inherit its default. Sandbox accepts `read-only`, `workspace-write`, or `danger-full-access`; approval policy accepts `on-request` or `never`. Overrides apply to new Codex sessions and their later replies/resumes, including after a daemon restart. They are saved with the run, so changing a job affects future occurrences. Existing-thread follow-ups and Claude jobs reject this Codex-specific field.
+
 `channel:auto` chooses the closest linked directory, preferring an exact match. The chosen destination is pinned. Changed ownership disables the schedule on its next attempt until the definition is updated. `channel:null`, or no matching linked directory, saves final output locally in `history` without sending to Slack. Interactive local-only work requires inspecting the saved session locally.
 
 Schedules and run history live in `schedules.sqlite` under the existing private state directory. The CLI uses `control.sock` (mode 0600); it does not need Slack credentials. The timer checks every five seconds and requires the daemon/machine to be running. After downtime, each overdue task runs once rather than replaying all missed intervals. Active or uncertain work in the same or nested directory blocks scheduled launches: recurring occurrences are skipped and one-shot tasks wait. Work in separate directories can proceed independently.
@@ -226,7 +345,7 @@ Only configured users in the configured workspace/channels can send instructions
 
 With the default driver, the daemon spawns `codex app-server` and communicates over stdio. After all turns have been idle for a minute, it recycles that process and its helper process group; the next input transparently resumes the saved session through a fresh app-server. This bounds resources left by completed tool calls. The Claude driver starts a streaming `claude -p` subprocess for each live session and resumes its native session ID after a process or daemon restart. Neither driver starts another model to interpret Slack commands.
 
-Model, reasoning effort, instructions, and memory settings are inherited from the selected agent's effective configuration. Codex scheduled runs explicitly request `sandbox: "danger-full-access"` and `approvalPolicy: "never"`; Claude scheduled runs use `bypassPermissions`. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Ordinary sessions use the driver's normal permission policy. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
+Model, reasoning effort, instructions, and memory settings are inherited from the selected agent's effective configuration. Codex scheduled runs inherit the machine's effective sandbox, approval policy, and approval reviewer configuration, just like ordinary sessions. The scheduler does not override these settings on creation or resume, including manual `run` occurrences. Claude scheduled runs use `bypassPermissions`. Task authorization and project instructions still apply. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
 
 Bindings and messages are stored in `stateDir/bridge.sqlite`. SQLite also provides a separate process lease so two daemons cannot use the same state directory. Run only one instance per Slack app token, even with different state directories. The state directory is private to your OS user and contains conversation text; it is not encrypted.
 
@@ -247,7 +366,7 @@ This is not an exactly-once delivery guarantee. Slack Bolt can acknowledge an ev
 Version 0.1 is intentionally narrow:
 
 - Up to 10 uploaded files per message, 25 MiB each and 50 MiB total. Remote file links (such as cloud document shares) must be uploaded as actual files. If any attachment fails, the whole prompt is held back with a visible error.
-- MCP elicitation forms/URL confirmations are declined visibly. Native Codex `requestUserInput` questions are supported. Secret question fields and oversized approval forms are rejected rather than truncated or silently approved.
+- MCP URL confirmations and empty forms wait for a real Approve/Decline/Cancel decision. Simple forms accept validated JSON input through Slack; secret or unsupported forms require a native client and are reported as unsupported, never as a user denial. Native Codex `requestUserInput` questions are supported. Secret question fields and oversized approval forms are rejected rather than truncated or silently approved.
 - Approval buttons offer one-time decisions, not persistent rule changes. Permission grants last for the current turn. File approval cards include the proposed changes; if that event is missing, only negative decisions are offered.
 - No attachment to a currently running terminal process, remote app-server transport, slash commands, or team orchestration. `!thread` resumes the selected saved conversation through this bridge's app-server connection; it does not take over another live process.
 - Outputs are forwarded when each assistant message completes, not token by token. Standard model-generated Markdown is currently displayed as plain text to avoid unintended Slack mentions.

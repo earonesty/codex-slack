@@ -1,5 +1,5 @@
 import type { LocalAttachment } from './attachments.ts';
-import { Agent, type AgentThread } from './agent.ts';
+import { Agent, type AgentThread, type CodexPermissions } from './agent.ts';
 import { record } from './config.ts';
 import { Rpc } from './rpc.ts';
 
@@ -9,6 +9,7 @@ export class Codex extends Agent {
   readonly name = 'Codex';
   readonly capabilities = { threadDiscovery: true, interactiveRequests: true };
   private loaded = new Set<string>();
+  private permissions = new Map<string, CodexPermissions>();
   private recycleTimer?: NodeJS.Timeout;
   readonly active = new Map<string, string>();
   constructor(readonly rpc: Rpc, private idleRecycleMs = 60_000) {
@@ -57,22 +58,24 @@ export class Codex extends Agent {
   }
   respond(id: string | number, result: unknown): void { this.rpc.respond(id, result); }
   reject(id: string | number, message: string): void { this.rpc.reject(id, message); }
-  async create(cwd: string, options: { unattended?: boolean } = {}): Promise<string> {
+  /** Start a native Codex thread with optional explicit sandbox and approval defaults. */
+  async create(cwd: string, options: { unattended?: boolean; codexPermissions?: CodexPermissions } = {}): Promise<string> {
     await this.rpc.start();
-    // Scheduled work needs filesystem/network access without an approval round trip.
-    // Other settings, and permissions for ordinary Slack sessions, inherit Codex.
-    const result = record(await this.rpc.request('thread/start', { cwd,
-      ...(options.unattended ? { sandbox: 'danger-full-access', approvalPolicy: 'never' } : {}),
-    }));
+    // Scheduled and interactive sessions inherit the machine's Codex permissions.
+    const result = record(await this.rpc.request('thread/start', { cwd, ...options.codexPermissions }));
     const id = record(result.thread).id;
     if (typeof id !== 'string') throw new Error('Codex returned no thread ID');
     this.loaded.add(id);
+    if (options.codexPermissions) this.permissions.set(id, { ...options.codexPermissions });
     return id;
   }
+  /** Resume a saved thread, restoring persisted per-session permission overrides. */
   async resume(thread: string): Promise<void> {
     await this.rpc.start();
     if (this.loaded.has(thread)) return;
-    const result = record(await this.rpc.request('thread/resume', { threadId: thread }));
+    const result = record(await this.rpc.request('thread/resume', { threadId: thread,
+      ...(this.permissions.get(thread) ?? this.permissionsForThread(thread)),
+    }));
     const turns = record(result.thread).turns;
     if (Array.isArray(turns)) {
       const turn = turns.map(record).findLast(turn => turn.status === 'inProgress');
