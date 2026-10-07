@@ -166,23 +166,51 @@ Every five minutes by default, the feed backfills open issues and PRs, then trac
 updated items (including closed ones). [GitHub's issues endpoint includes PRs](https://docs.github.com/en/rest/issues/issues).
 Each item has one Slack card/thread; subsequent updates edit the card without
 repeating automatic triage. The automatic assessment uses the persisted title,
-description, labels, author, state, and update timestamp. It reports when comments,
-diffs, checks, or reviews need inspection in a later operator-authorized follow-up.
+description, labels, author, state, and update timestamp as its starting context.
+It may inspect the bound checkout and use configured read-only diagnostic tools when
+that materially improves the assessment. It reports missing evidence or uncertainty.
 Reviews/checks that do not change the issue's `updated_at` are not standalone feed
 events.
 
 New cards start transient Codex sessions through the existing durable inbox with
 `sandbox:"read-only"` and `approvalPolicy:"never"` enforced. The model receives the
-persisted item snapshot and is told not to invoke tools. The restricted session is
-used only for that automatic turn and is never attached as the Slack conversation's
-resumable session. Public GitHub data remains untrusted input. A later human reply
-starts an ordinary session with the item's URL and context; it can inspect current
-comments, diffs, checks, and reviews and follows the operator's normal Codex policy.
+persisted item snapshot and may perform read-only diagnosis with the checkout and
+tools available to that Codex installation. It is instructed not to use tools that
+create, update, delete, or send data outside the configured Slack conversation.
+The restricted session is used only for that automatic turn and is never attached
+as the Slack conversation's resumable session. Public GitHub data remains untrusted
+input. A later human reply starts an ordinary session with the item's URL and context;
+it follows the operator's normal Codex policy.
 Posting GitHub replies, changing labels, closing, pushing, creating PRs, or merging
 still requires that explicit operator instruction. Reply naturally, for example
 “draft a response,” “post that response,” “close as duplicate of #12,” or “fix it
 and open a PR.” Existing operator authorization, interactive approvals, `!stop`,
 `!status`, and restart recovery apply.
+
+### Automatic-triage trust boundary
+
+Codex Slack is a personal/operator bridge, not a multi-tenant service. Automatic
+triage deliberately trades isolation for useful diagnosis: public GitHub content can
+cause Codex to read the bound project and invoke the diagnostic tools enabled in its
+effective configuration. The configured Slack channel is the reporting boundary.
+Treat every member who can read that channel, the bound workspace, and every tool or
+MCP server exposed to Codex as mutually trusted for this project.
+
+The enforced read-only sandbox prevents workspace modification, and `never` prevents
+the automatic turn from stopping to request broader approval. Those settings do not
+turn off tools or make a write-capable connector read-only. Do not expose automatically
+approved mutating tools or credentials to this workload unless that access is part of
+your intended trust boundary. `skipTriage` can suppress automatic investigation for
+repositories, authors, or content that should require a human instruction first.
+
+For stronger separation, run a dedicated bridge deployment with `CODEX_HOME` pointing
+to a separate Codex home that contains only the skills, MCP servers, apps, credentials,
+and read-only diagnostic tools intended for triage. Set `CODEX_HOME` in the service
+environment before the daemon starts. A Codex home applies to the app-server process,
+so it currently affects all Codex sessions in that daemon, not only feed turns; use a
+separate Slack app token and state directory if ordinary conversations need a broader
+Codex configuration. Per-feed `CODEX_HOME` selection would require a second app-server
+and is not supported by this release.
 
 `batchSize` (1–10, default 3) limits new assessments per polling cycle and pauses
 launches while that many agent turns are active; backlog drains gradually. Feed
