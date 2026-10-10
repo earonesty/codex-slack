@@ -65,6 +65,7 @@ test('save pins closest project channel, validates inputs, and updates idempoten
   assert.throws(() => f.scheduler.put({ ...f.job, at: '2026-10-01T00:00:00Z' }), /exactly one/);
   assert.throws(() => f.scheduler.put({ ...f.job, cron: null, at: '2026-10-01T00:00:00' }), /offset/);
   assert.throws(() => f.scheduler.put({ ...f.job, user: 'U999' }), /authorized/);
+  assert.throws(() => f.scheduler.put({ ...f.job, disableOnFailure: 'no' }), /disableOnFailure/);
   assert.equal(f.scheduler.put({ ...f.job, channel: null }).channel, null);
 });
 
@@ -264,9 +265,12 @@ test('quiet is the default, including old saved definitions, and verbosity is va
   const f = fixture(t);
   const job = f.scheduler.put(f.job);
   assert.equal(job.verbosity, 'quiet');
-  delete job.verbosity; f.db.save(job);
+  assert.equal(job.disableOnFailure, false);
+  delete job.verbosity; delete job.disableOnFailure; f.db.save(job);
   assert.equal(f.db.get(job.id)?.verbosity, 'quiet');
+  assert.equal(f.db.get(job.id)?.disableOnFailure, false);
   assert.equal(f.db.list()[0]?.verbosity, 'quiet');
+  assert.equal(f.db.list()[0]?.disableOnFailure, false);
   assert.throws(() => f.scheduler.put({ ...f.job, verbosity: 'loud' }), /verbosity/);
   assert.throws(() => f.scheduler.put({ ...f.job, scheduledBrowserUse: 'yes' }), /scheduledBrowserUse/);
 });
@@ -499,14 +503,23 @@ test('in-thread scheduled Browser Use remains interactive when enabled', async t
   await until(() => f.db.history()[0]?.status === 'completed');
 });
 
-test('condition failures and expiration disable the task without agent work or new Slack threads', async t => {
+test('recurring condition failures retry by default and can explicitly fail closed', async t => {
   for (const result of [{ code: 2 }, { code: null, error: 'Condition timed out' }]) {
     const f = fixture(t, false, 0, async () => result);
     const job = f.scheduler.put({ ...f.job, condition: predicate });
     f.setTime(job.nextAt!); await f.scheduler.tick();
-    assert.equal(f.db.get(job.id)?.enabled, false); assert.ok(f.db.get(job.id)?.conditionError);
+    assert.equal(f.db.get(job.id)?.enabled, true); assert.ok(f.db.get(job.id)?.conditionError);
+    assert.ok(f.db.get(job.id)!.nextAt! > job.nextAt!);
+    assert.equal(f.db.get(job.id)?.conditionLastExit, result.code);
     assert.equal(f.roots.length, 0); assert.equal(f.db.history().length, 0);
   }
+  const closed = fixture(t, false, 0, async () => ({ code: null, error: 'Condition timed out' }));
+  const closedJob = closed.scheduler.put({ ...closed.job, condition: predicate, disableOnFailure: true });
+  closed.setTime(closedJob.nextAt!); await closed.scheduler.tick();
+  assert.equal(closed.db.get(closedJob.id)?.enabled, false); assert.equal(closed.db.get(closedJob.id)?.nextAt, null);
+});
+
+test('condition expiration always disables the task', async t => {
   const f = fixture(t, false, 0, async () => { assert.fail('Expired predicate must not run'); });
   const job = f.scheduler.put({ ...f.job, condition: { ...predicate, expiresAt: '2026-09-13T16:00:00Z' } });
   f.setTime(job.nextAt!); await f.scheduler.tick();

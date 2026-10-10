@@ -5,6 +5,7 @@ export type Job = {
   id: string; name: string; prompt: string; cwd: string; cron: string | null; at: string | null;
   timezone: string; channel: string | null; channelCwd: string | null; team: string; user: string;
   enabled: boolean; nextAt: number | null; verbosity?: 'quiet' | 'verbose';
+  disableOnFailure?: boolean;
   scheduledBrowserUse?: boolean;
   thread?: string; threadKey?: string; condition?: Condition; repeat?: boolean;
   revision?: string; conditionLastChecked?: number; conditionLastExit?: number | null; conditionError?: string | null;
@@ -35,11 +36,16 @@ export class ScheduleStore {
   }
   close(): void { this.db.close(); }
   list(): Job[] {
-    return this.db.prepare('SELECT document FROM jobs ORDER BY id').all().map(row => ({ verbosity: 'quiet', ...JSON.parse(String(row.document)) }) as Job);
+    return this.db.prepare('SELECT document FROM jobs ORDER BY id').all().map(row => {
+      const job = JSON.parse(String(row.document)) as Job;
+      return { verbosity: 'quiet', disableOnFailure: !job.cron, ...job };
+    });
   }
   get(id: string): Job | undefined {
     const row = this.db.prepare('SELECT document FROM jobs WHERE id=?').get(id);
-    return row ? ({ verbosity: 'quiet', ...JSON.parse(String(row.document)) }) as Job : undefined;
+    if (!row) return undefined;
+    const job = JSON.parse(String(row.document)) as Job;
+    return { verbosity: 'quiet', disableOnFailure: !job.cron, ...job };
   }
   save(job: Job): Job {
     this.db.prepare('INSERT OR REPLACE INTO jobs VALUES(?,?)').run(job.id, JSON.stringify(job));

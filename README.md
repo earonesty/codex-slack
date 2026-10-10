@@ -160,9 +160,14 @@ The predicate runs directly, with argv and no implicit shell, as the daemon's OS
 user in the task directory. It has the daemon's environment and is outside the
 agent sandbox; use read-only checks safe to repeat. No model runs on pending checks,
 and command output is discarded. Exit **0** fires, **1** waits, and other exit
-codes, signals, timeouts, or launch failures disable the schedule with
-`conditionError` visible in `get`/`list`. These failures and expiration do not post
-Slack alerts. `conditionLastChecked` and `conditionLastExit` expose check state.
+codes, signals, timeouts, or launch failures save `conditionError` visible in
+`get`/`list`. Recurring schedules retry at their next occurrence by default, so a
+transient condition failure does not permanently stop daily or weekly work. Set
+`"disableOnFailure": true` to fail closed instead. One-shot schedules default to
+fail closed; set the flag to `false` to retry them at `condition.pollSeconds` until
+expiration. Expiration and authorization/routing failures always disable. These
+failures do not post Slack alerts. `conditionLastChecked` and
+`conditionLastExit` expose check state.
 The timeout accepts 1–60 seconds. A cron schedule sets check cadence; an `at`
 schedule retries pending checks every `condition.pollSeconds` (default 300).
 `condition.expiresAt` accepts an ISO timestamp with timezone and defaults to seven

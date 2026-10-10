@@ -189,6 +189,7 @@ export class Scheduler {
       if (!Number.isFinite(nextAt) || nextAt <= this.now()) throw new Error('at must be a future timestamp');
     }
     if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') throw new Error('enabled must be boolean');
+    if (raw.disableOnFailure !== undefined && typeof raw.disableOnFailure !== 'boolean') throw new Error('disableOnFailure must be boolean');
     if (raw.verbosity !== undefined && raw.verbosity !== 'quiet' && raw.verbosity !== 'verbose') throw new Error('verbosity must be quiet or verbose');
     if (raw.scheduledBrowserUse !== undefined && typeof raw.scheduledBrowserUse !== 'boolean') throw new Error('scheduledBrowserUse must be boolean');
     let thread = raw.thread === 'current' ? contextThread : raw.thread;
@@ -219,12 +220,14 @@ export class Scheduler {
     if (raw.repeat !== undefined && typeof raw.repeat !== 'boolean') throw new Error('repeat must be boolean');
     const job: Job = { id, name: required(raw, 'name', 200), prompt: required(raw, 'prompt'), cwd, cron, at,
       timezone, channel, channelCwd: channel ? config.channels[channel]!.cwd : null, team: config.teamId, user,
-      enabled: raw.enabled as boolean ?? previous?.enabled ?? true, nextAt, verbosity: raw.verbosity as Job['verbosity'] ?? 'quiet' };
+      enabled: raw.enabled as boolean ?? previous?.enabled ?? true, nextAt,
+      disableOnFailure: raw.disableOnFailure as boolean ?? previous?.disableOnFailure ?? !cron,
+      verbosity: raw.verbosity as Job['verbosity'] ?? 'quiet' };
     if (typeof raw.scheduledBrowserUse === 'boolean') job.scheduledBrowserUse = raw.scheduledBrowserUse;
     if (typeof thread === 'string') { job.thread = thread; job.threadKey = target!.key; }
     if (condition) { job.condition = condition; job.repeat = raw.repeat as boolean ?? false; }
     else if (raw.repeat !== undefined) job.repeat = raw.repeat as boolean;
-    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'scheduledBrowserUse']
+    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'disableOnFailure', 'scheduledBrowserUse']
       .every(k => JSON.stringify(previous[k as keyof Job]) === JSON.stringify(job[k as keyof Job]));
     job.revision = sameDefinition ? previous.revision : randomUUID();
     if (sameDefinition) {
@@ -261,8 +264,20 @@ export class Scheduler {
   }
   private async conditionPasses(job: Job, scheduled: boolean): Promise<boolean> {
     if (!job.condition) return true;
-    const fail = (error: string) => this.db.save({ ...job, enabled: false, nextAt: null, conditionError: error });
-    if (job.condition.expiresAt <= this.now()) { fail('Condition expired'); return false; }
+    const fail = (error: string, terminal = false, checked = false, code: number | null = null) => {
+      const current = this.db.get(job.id);
+      if (!current || current.revision !== job.revision) return;
+      const disable = terminal || current.disableOnFailure !== false;
+      let nextAt = current.nextAt;
+      if (!disable && scheduled) {
+        nextAt = current.cron ? nextOccurrence(current.cron, current.timezone, this.now())
+          : this.now() + current.condition!.pollSeconds * 1000;
+      }
+      this.db.save({ ...current, enabled: !disable, nextAt: disable ? null : nextAt,
+        conditionLastChecked: checked ? this.now() : current.conditionLastChecked,
+        conditionLastExit: checked ? code : current.conditionLastExit, conditionError: error });
+    };
+    if (job.condition.expiresAt <= this.now()) { fail('Condition expired', true); return false; }
     const controller = new AbortController(); this.checks.set(job.id, controller);
     let result;
     try { result = await this.check(job.condition, job.cwd, controller.signal); }
@@ -271,11 +286,11 @@ export class Scheduler {
     const current = this.db.get(job.id);
     if (this.stopped || controller.signal.aborted || !current || current.revision !== job.revision) return false;
     // A binding can be revoked while the executable is running.
-    try { this.valid(current); } catch { fail('Original schedule destination is no longer authorized'); return false; }
+    try { this.valid(current); } catch { fail('Original schedule destination is no longer authorized', true, true, result.code); return false; }
     Object.assign(job, current, { conditionLastChecked: this.now(), conditionLastExit: result.code, conditionError: null });
-    if (job.condition.expiresAt <= this.now()) { fail('Condition expired'); return false; }
+    if (job.condition.expiresAt <= this.now()) { fail('Condition expired', true, true, result.code); return false; }
     if (result.error || (result.code !== 0 && result.code !== 1)) {
-      fail(result.error ?? 'Condition failed (expected exit 0 for ready or 1 for pending)');
+      fail(result.error ?? 'Condition failed (expected exit 0 for ready or 1 for pending)', false, true, result.code);
       console.error(`Scheduled condition failed for ${job.id}; inspect schedule get/list.`);
       return false;
     }
