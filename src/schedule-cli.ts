@@ -34,8 +34,10 @@ Use "thread":"current" (CODEX_THREAD_ID), a saved session ID or Slack root times
 or --session <id>
 to queue the task as a follow-up in that existing Slack thread, without a new session.
 Optional condition: {"executable":"/absolute/check","args":[],"timeoutSeconds":30}.
-Conditions run without a model: exit 0 fires, 1 waits, other exits/timeouts disable
-the task with conditionError (get/list); no Slack thread or turn is created by checks.
+Conditions run without a model: exit 0 fires and 1 waits. Other exits/timeouts save
+conditionError; recurring tasks retry by default, while one-shots disable by default.
+Set "disableOnFailure":true to make a recurring task fail closed, or false to make a
+one-shot condition retry until expiration. No Slack thread or turn is created by checks.
 Conditional tasks disarm after firing unless "repeat":true is explicitly set.
 Cron sets check frequency; at checks retry every condition.pollSeconds (default 300).
 condition.expiresAt defaults to 7 days; set an ISO timestamp with timezone if needed.

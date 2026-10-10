@@ -49,6 +49,8 @@ Set `scheduledBrowserUse:true` only when the task specifically needs the Codex B
 
 Recurring tasks use five-field cron (`minute hour day month weekday`) plus an IANA timezone. One-shot tasks use `"at":"2026-10-01T09:00:00-07:00"` instead of `cron`; always include an explicit offset or `Z`. `enabled:false` saves a paused task. If the daemon has multiple authorized Slack users, set `user` to the requester's verified Slack member ID; the originating session can usually supply it automatically.
 
+Recurring tasks remain enabled after agent errors, interruptions, bridge restarts, and transient condition failures. A failed condition saves `conditionError` and retries at the next cron occurrence. Set `disableOnFailure:true` only when a recurring condition must fail closed. One-shot conditions default to fail closed; `disableOnFailure:false` makes them retry at `condition.pollSeconds` until expiration. Expiration and authorization/routing failures always disable because retrying cannot safely repair them.
+
 ## Slack routing and runtime behavior
 
 The fresh-session delivery details below apply when `thread` is omitted. Existing-thread follow-ups use normal conversation delivery instead of scheduled quiet/verbose output handling.
