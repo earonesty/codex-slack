@@ -2,6 +2,21 @@
 
 Read README.md before changing daemon lifecycle or session delivery.
 
+## Complete changes before deploying locally
+
+The persistent local daemon runs this checkout. A successful test or local restart
+does not complete branch work. Before a normal restart, merge the intended work
+into `main`, run required checks, commit, push to `origin/main`, and verify a clean
+working tree with local HEAD equal to the published remote main. Inspect unmerged
+local branches for features still used by the daemon before rebuilding from main.
+Do not delete branches containing unmerged work.
+
+The restart helper enforces clean, published main by default. Use
+`--allow-unpublished` only when temporary branch testing is explicitly intended;
+finish by merging/pushing and restarting the published main checkout. Report the
+commit, push, and live verification separately so temporary deployment cannot be
+mistaken for completed integration.
+
 ## Restarting from a Slack-linked Codex session
 
 This chat's Codex app-server and shell tools can be children of `codex-slack.service`.

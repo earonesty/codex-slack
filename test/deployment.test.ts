@@ -1,0 +1,41 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { assertPublishedMain } from '../src/deployment.ts';
+
+test('persistent restart requires clean main matching the actual remote, not a stale tracking ref', t => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'bridge-deployment-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const remote = path.join(dir, 'remote.git');
+  const cwd = path.join(dir, 'checkout');
+  const git = (at: string, ...args: string[]) => execFileSync('git', args, { cwd: at, stdio: 'pipe' });
+  git(dir, 'init', '--bare', remote);
+  git(dir, 'init', '-b', 'main', cwd);
+  git(cwd, 'config', 'user.name', 'Test');
+  git(cwd, 'config', 'user.email', 'test@example.com');
+  git(cwd, 'commit', '--allow-empty', '-m', 'initial');
+  git(cwd, 'remote', 'add', 'origin', remote);
+  git(cwd, 'push', '-u', 'origin', 'main');
+  assert.doesNotThrow(() => assertPublishedMain(cwd));
+  writeFileSync(path.join(cwd, 'pending.txt'), 'pending');
+  assert.throws(() => assertPublishedMain(cwd), /clean working tree/);
+  rmSync(path.join(cwd, 'pending.txt'));
+  git(cwd, 'switch', '-c', 'feature');
+  assert.throws(() => assertPublishedMain(cwd), /main branch/);
+  git(cwd, 'switch', 'main');
+  git(cwd, 'commit', '--allow-empty', '-m', 'unpublished');
+  assert.throws(() => assertPublishedMain(cwd), /published origin\/main/);
+  git(cwd, 'push', 'origin', 'main');
+  assert.doesNotThrow(() => assertPublishedMain(cwd));
+  // The remote changes without updating this checkout's origin/main tracking ref.
+  const other = path.join(dir, 'other');
+  git(dir, 'clone', '-b', 'main', remote, other);
+  git(other, 'config', 'user.name', 'Test');
+  git(other, 'config', 'user.email', 'test@example.com');
+  git(other, 'commit', '--allow-empty', '-m', 'remote update');
+  git(other, 'push', 'origin', 'main');
+  assert.throws(() => assertPublishedMain(cwd), /published origin\/main/);
+});

@@ -60,6 +60,7 @@ export async function discover(api: Api): Promise<Directory> {
   };
 }
 
+/** Resolve human-readable Slack settings to pinned IDs before strict config parsing. */
 export function resolveSettings(value: unknown, directory: Directory, existing?: Pins): { config: Config; pins: Pins } {
   const raw = record(value);
   if (raw.teamId && raw.teamId !== directory.teamId) throw new Error('Configured workspace does not match the bot token');
@@ -89,7 +90,9 @@ export function resolveSettings(value: unknown, directory: Directory, existing?:
     Object.defineProperty(pins.channels, key, { value: channel.id, writable: true, configurable: true, enumerable: true });
     channels[channel.id] = { cwd: typeof setting === 'string' ? setting : record(setting).cwd };
   }
-  return { config: parseConfig({ ...raw, teamId: directory.teamId, allowedUserIds: ids, channels }), pins };
+  const github = raw.github === undefined ? undefined : { ...record(raw.github),
+    channel: pins.channels[String(record(raw.github).channel).replace(/^#/, '').toLowerCase()] ?? record(raw.github).channel };
+  return { config: parseConfig({ ...raw, ...(github === undefined ? {} : { github }), teamId: directory.teamId, allowedUserIds: ids, channels }), pins };
 }
 
 export function loadResolvedConfig(directory: Directory): Config {

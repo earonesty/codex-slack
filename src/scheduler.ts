@@ -204,6 +204,16 @@ export class Scheduler {
     if (thread && (raw.scheduledSandbox !== undefined || raw.scheduledApprovalPolicy !== undefined)) {
       throw new Error('scheduledSandbox and scheduledApprovalPolicy apply to new scheduled sessions; existing-thread follow-ups use interactive permissions');
     }
+    let codexPermissions: Job['codexPermissions'];
+    if (raw.codexPermissions !== undefined) {
+      if (config.agent.driver !== 'codex' || thread) throw new Error('codexPermissions requires a new Codex session');
+      if (!raw.codexPermissions || typeof raw.codexPermissions !== 'object' || Array.isArray(raw.codexPermissions)) throw new Error('codexPermissions must be an object');
+      const permissions = record(raw.codexPermissions);
+      if (Object.keys(permissions).some(key => key !== 'sandbox' && key !== 'approvalPolicy')) throw new Error('Unknown codexPermissions field');
+      if (permissions.sandbox !== undefined && (typeof permissions.sandbox !== 'string' || !['read-only', 'workspace-write', 'danger-full-access'].includes(permissions.sandbox))) throw new Error('Invalid codexPermissions.sandbox');
+      if (permissions.approvalPolicy !== undefined && (typeof permissions.approvalPolicy !== 'string' || !['on-request', 'never'].includes(permissions.approvalPolicy))) throw new Error('Invalid codexPermissions.approvalPolicy');
+      codexPermissions = { ...permissions } as Job['codexPermissions'];
+    }
     let condition: Condition | undefined;
     if (raw.condition !== undefined) {
       const predicate = record(raw.condition);
@@ -231,9 +241,10 @@ export class Scheduler {
     if (raw.scheduledSandbox !== undefined) job.scheduledSandbox = raw.scheduledSandbox as Job['scheduledSandbox'];
     if (raw.scheduledApprovalPolicy !== undefined) job.scheduledApprovalPolicy = raw.scheduledApprovalPolicy as Job['scheduledApprovalPolicy'];
     if (typeof thread === 'string') { job.thread = thread; job.threadKey = target!.key; }
+    if (codexPermissions) job.codexPermissions = codexPermissions;
     if (condition) { job.condition = condition; job.repeat = raw.repeat as boolean ?? false; }
     else if (raw.repeat !== undefined) job.repeat = raw.repeat as boolean;
-    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'disableOnFailure', 'scheduledBrowserUse', 'scheduledSandbox', 'scheduledApprovalPolicy']
+    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'disableOnFailure', 'scheduledBrowserUse', 'scheduledSandbox', 'scheduledApprovalPolicy', 'codexPermissions']
       .every(k => JSON.stringify(previous[k as keyof Job]) === JSON.stringify(job[k as keyof Job]));
     job.revision = sameDefinition ? previous.revision : randomUUID();
     if (sameDefinition) {
@@ -383,8 +394,8 @@ export class Scheduler {
       this.valid(job);
       if (this.stopped) throw new Error('Scheduler stopped before session creation');
       const permissions = { unattended: true,
-        sandbox: job.scheduledSandbox ?? this.bridge.config.scheduledSandbox ?? 'workspace-write',
-        approvalPolicy: job.scheduledApprovalPolicy ?? this.bridge.config.scheduledApprovalPolicy ?? 'on-request' };
+        sandbox: job.scheduledSandbox ?? job.codexPermissions?.sandbox ?? this.bridge.config.scheduledSandbox ?? 'workspace-write',
+        approvalPolicy: job.scheduledApprovalPolicy ?? job.codexPermissions?.approvalPolicy ?? this.bridge.config.scheduledApprovalPolicy ?? 'on-request' };
       run.thread = await this.bridge.agent.create(job.cwd, permissions);
       if (run.key) this.bridge.store.bind(run.key, run.thread);
       this.db.update({ ...run, status: 'running' });

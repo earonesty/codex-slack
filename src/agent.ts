@@ -20,6 +20,11 @@ export type AgentCapabilities = {
 
 export class AgentError extends Error {}
 
+export type CodexPermissions = {
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  approvalPolicy?: 'on-request' | 'never' | 'untrusted';
+};
+
 /**
  * The Slack side consumes this normalized session/turn contract. Drivers own
  * their native process protocol and translate it to Codex-shaped turn events.

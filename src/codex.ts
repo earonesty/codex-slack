@@ -1,5 +1,5 @@
 import type { LocalAttachment } from './attachments.ts';
-import { Agent, type AgentThread } from './agent.ts';
+import { Agent, type AgentThread, type CodexPermissions } from './agent.ts';
 import { record } from './config.ts';
 import type { AgentOptions } from './config.ts';
 import { Rpc } from './rpc.ts';
@@ -10,6 +10,7 @@ export class Codex extends Agent {
   readonly name = 'Codex';
   readonly capabilities = { threadDiscovery: true, interactiveRequests: true };
   private loaded = new Set<string>();
+  private explicitPermissions = new Map<string, CodexPermissions>();
   private recycleTimer?: NodeJS.Timeout;
   readonly active = new Map<string, string>();
   constructor(readonly rpc: Rpc, private idleRecycleMs = 60_000) {
@@ -64,16 +65,18 @@ export class Codex extends Agent {
     // Ordinary sessions inherit Codex settings.
     const result = record(await this.rpc.request('thread/start', { cwd,
       ...(options.unattended ? { sandbox: options.sandbox ?? 'workspace-write', approvalPolicy: options.approvalPolicy ?? 'on-request' } : {}),
+      ...options.codexPermissions,
     }));
     const id = record(result.thread).id;
     if (typeof id !== 'string') throw new Error('Codex returned no thread ID');
     this.loaded.add(id);
+    if (options.codexPermissions) this.explicitPermissions.set(id, { ...options.codexPermissions });
     return id;
   }
   private async permissions(cwd: string, options: AgentOptions = {}) {
     // Read project/user configuration, not settings persisted by the scheduled turn.
     const config = options.unattended ? {} : record(record(await this.rpc.request('config/read', { cwd })).config);
-    const sandbox = options.unattended ? options.sandbox ?? 'workspace-write' : config.sandbox_mode ?? 'workspace-write';
+    const sandbox = options.codexPermissions?.sandbox ?? (options.unattended ? options.sandbox ?? 'workspace-write' : config.sandbox_mode ?? 'workspace-write');
     const workspace = record(config.sandbox_workspace_write);
     const sandboxPolicy = sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' }
       : sandbox === 'read-only' ? { type: 'readOnly', networkAccess: false }
@@ -81,13 +84,13 @@ export class Codex extends Agent {
         networkAccess: workspace.network_access ?? false, excludeTmpdirEnvVar: workspace.exclude_tmpdir_env_var ?? false,
         excludeSlashTmp: workspace.exclude_slash_tmp ?? false };
     return { sandbox, sandboxPolicy,
-      approvalPolicy: options.unattended ? options.approvalPolicy ?? 'on-request' : config.approval_policy ?? 'on-request',
+      approvalPolicy: options.codexPermissions?.approvalPolicy ?? (options.unattended ? options.approvalPolicy ?? 'on-request' : config.approval_policy ?? 'on-request'),
       ...(config.approvals_reviewer ? { approvalsReviewer: config.approvals_reviewer } : {}) };
   }
   async resume(thread: string, cwd?: string): Promise<void> {
     await this.rpc.start();
     if (this.loaded.has(thread)) return;
-    const permissions = await this.permissions(cwd ?? (await this.read(thread)).cwd);
+    const permissions = await this.permissions(cwd ?? (await this.read(thread)).cwd, { codexPermissions: this.explicitPermissions.get(thread) });
     await this.resumeWithPermissions(thread, permissions);
   }
   private async resumeWithPermissions(thread: string, permissions: Awaited<ReturnType<Codex['permissions']>>): Promise<void> {
@@ -121,7 +124,7 @@ export class Codex extends Agent {
   }
   async input(thread: string, cwd: string, text: string, files: LocalAttachment[] = [], options: AgentOptions = {}): Promise<void> {
     await this.rpc.start();
-    const permissions = await this.permissions(cwd, options);
+    const permissions = await this.permissions(cwd, { ...options, codexPermissions: options.codexPermissions ?? this.explicitPermissions.get(thread) });
     await this.resumeWithPermissions(thread, permissions);
     const turn = this.active.get(thread);
     const descriptions = files.length ? '\n\nAttached files (local copies; read them as needed):\n'

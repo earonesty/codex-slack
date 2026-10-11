@@ -18,7 +18,8 @@ export class Rpc extends EventEmitter {
   private pending = new Map<string | number, Pending>();
   private nextId = 0;
   private epoch = randomUUID();
-  constructor(private command: string, private args = ['app-server'], private timeoutMs = 30_000) { super(); }
+  constructor(private command: string, private args = ['app-server'], private timeoutMs = 30_000,
+    private env: NodeJS.ProcessEnv = process.env) { super(); }
 
   start(): Promise<void> {
     if (this.starting) return this.starting;
@@ -26,7 +27,7 @@ export class Rpc extends EventEmitter {
     return this.starting;
   }
   private async connect(): Promise<void> {
-    const child = spawn(this.command, this.args, { stdio: 'pipe', env: process.env, detached: detachedProcessGroup });
+    const child = spawn(this.command, this.args, { stdio: 'pipe', env: this.env, detached: detachedProcessGroup });
     this.child = child;
     this.epoch = randomUUID();
     let buffer = '';

@@ -6,18 +6,22 @@ import { parseArgs } from 'node:util';
 import { expandPath, record } from './config.ts';
 import { controlRequest } from './control.ts';
 import { Store } from './store.ts';
+import { assertPublishedMain } from './deployment.ts';
 
 async function main(): Promise<void> {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     session: { type: 'string' }, 'state-dir': { type: 'string' }, help: { type: 'boolean', short: 'h' },
+    'allow-unpublished': { type: 'boolean' },
   } });
   if (values.help) {
-    console.log(`Usage: codex-slack-restart [status] [--session <Codex thread ID>] [--state-dir <directory>]
+    console.log(`Usage: codex-slack-restart [status] [--session <Codex thread ID>] [--state-dir <directory>] [--allow-unpublished]
 
 Without 'status', save a restart handoff and ask systemd to restart the bridge in 5 seconds.
 The new daemon queues a readiness notification into the same saved Codex session.
 The session defaults to CODEX_THREAD_ID. Requires a live bridge and user systemd access.
 If execution is interrupted, inspect status instead of issuing another restart.
+Restarts require a clean main checkout matching published origin/main.
+--allow-unpublished bypasses that check for intentional temporary testing.
 State directory defaults to CODEX_SLACK_STATE_DIR or ~/.local/state/codex-slack.`);
     return;
   }
@@ -33,6 +37,7 @@ State directory defaults to CODEX_SLACK_STATE_DIR or ~/.local/state/codex-slack.
       console.log(JSON.stringify({ ...pending, message: 'Already pending. No additional restart was requested.' }, null, 2));
       return;
     }
+    if (!values['allow-unpublished']) assertPublishedMain(fileURLToPath(new URL('..', import.meta.url)));
     const thread = values.session ?? process.env.CODEX_THREAD_ID;
     if (!thread) throw new Error('Pass --session or run from a Slack-linked Codex session.');
     const status = record(await controlRequest(path.join(stateDir, 'control.sock'), { action: 'status' }));
