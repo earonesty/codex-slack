@@ -1,6 +1,7 @@
 import type { LocalAttachment } from './attachments.ts';
 import { Agent, type AgentThread } from './agent.ts';
 import { record } from './config.ts';
+import type { AgentOptions } from './config.ts';
 import { Rpc } from './rpc.ts';
 
 export type CodexThread = AgentThread;
@@ -57,22 +58,43 @@ export class Codex extends Agent {
   }
   respond(id: string | number, result: unknown): void { this.rpc.respond(id, result); }
   reject(id: string | number, message: string): void { this.rpc.reject(id, message); }
-  async create(cwd: string, options: { unattended?: boolean } = {}): Promise<string> {
+  async create(cwd: string, options: AgentOptions = {}): Promise<string> {
     await this.rpc.start();
-    // Scheduled work needs filesystem/network access without an approval round trip.
-    // Other settings, and permissions for ordinary Slack sessions, inherit Codex.
+    // The scheduler supplies its global/per-job permissions explicitly.
+    // Ordinary sessions inherit Codex settings.
     const result = record(await this.rpc.request('thread/start', { cwd,
-      ...(options.unattended ? { sandbox: 'danger-full-access', approvalPolicy: 'never' } : {}),
+      ...(options.unattended ? { sandbox: options.sandbox ?? 'workspace-write', approvalPolicy: options.approvalPolicy ?? 'on-request' } : {}),
     }));
     const id = record(result.thread).id;
     if (typeof id !== 'string') throw new Error('Codex returned no thread ID');
     this.loaded.add(id);
     return id;
   }
-  async resume(thread: string): Promise<void> {
+  private async permissions(cwd: string, options: AgentOptions = {}) {
+    // Read project/user configuration, not settings persisted by the scheduled turn.
+    const config = options.unattended ? {} : record(record(await this.rpc.request('config/read', { cwd })).config);
+    const sandbox = options.unattended ? options.sandbox ?? 'workspace-write' : config.sandbox_mode ?? 'workspace-write';
+    const workspace = record(config.sandbox_workspace_write);
+    const sandboxPolicy = sandbox === 'danger-full-access' ? { type: 'dangerFullAccess' }
+      : sandbox === 'read-only' ? { type: 'readOnly', networkAccess: false }
+      : { type: 'workspaceWrite', writableRoots: workspace.writable_roots ?? [],
+        networkAccess: workspace.network_access ?? false, excludeTmpdirEnvVar: workspace.exclude_tmpdir_env_var ?? false,
+        excludeSlashTmp: workspace.exclude_slash_tmp ?? false };
+    return { sandbox, sandboxPolicy,
+      approvalPolicy: options.unattended ? options.approvalPolicy ?? 'on-request' : config.approval_policy ?? 'on-request',
+      ...(config.approvals_reviewer ? { approvalsReviewer: config.approvals_reviewer } : {}) };
+  }
+  async resume(thread: string, cwd?: string): Promise<void> {
     await this.rpc.start();
     if (this.loaded.has(thread)) return;
-    const result = record(await this.rpc.request('thread/resume', { threadId: thread }));
+    const permissions = await this.permissions(cwd ?? (await this.read(thread)).cwd);
+    await this.resumeWithPermissions(thread, permissions);
+  }
+  private async resumeWithPermissions(thread: string, permissions: Awaited<ReturnType<Codex['permissions']>>): Promise<void> {
+    if (this.loaded.has(thread)) return;
+    const { sandboxPolicy: _sandboxPolicy, ...overrides } = permissions;
+    // Explicitly restore the pair: Codex resume can retain `never` while dropping full access.
+    const result = record(await this.rpc.request('thread/resume', { threadId: thread, ...overrides }));
     const turns = record(result.thread).turns;
     if (Array.isArray(turns)) {
       const turn = turns.map(record).findLast(turn => turn.status === 'inProgress');
@@ -97,8 +119,10 @@ export class Codex extends Agent {
     const threads = result.data.map(record).filter(thread => typeof thread.id === 'string' && typeof thread.cwd === 'string') as CodexThread[];
     return { threads, more: typeof result.nextCursor === 'string' && !!result.nextCursor };
   }
-  async input(thread: string, _cwd: string, text: string, files: LocalAttachment[] = []): Promise<void> {
-    await this.resume(thread);
+  async input(thread: string, cwd: string, text: string, files: LocalAttachment[] = [], options: AgentOptions = {}): Promise<void> {
+    await this.rpc.start();
+    const permissions = await this.permissions(cwd, options);
+    await this.resumeWithPermissions(thread, permissions);
     const turn = this.active.get(thread);
     const descriptions = files.length ? '\n\nAttached files (local copies; read them as needed):\n'
       + files.map(file => `- ${JSON.stringify(file.name)}: ${JSON.stringify(file.path)}`).join('\n') : '';
@@ -108,7 +132,10 @@ export class Codex extends Agent {
     ];
     // No retry on an uncertain acknowledgement: starting another turn could duplicate work.
     if (turn) await this.rpc.request('turn/steer', { threadId: thread, expectedTurnId: turn, input });
-    else await this.rpc.request('turn/start', { threadId: thread, input });
+    else {
+      const { sandbox: _sandbox, ...overrides } = permissions;
+      await this.rpc.request('turn/start', { threadId: thread, input, ...overrides });
+    }
   }
   async interrupt(thread: string): Promise<boolean> {
     await this.resume(thread);

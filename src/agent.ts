@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { LocalAttachment } from './attachments.ts';
 import type { ServerRequest } from './rpc.ts';
+import type { AgentOptions } from './config.ts';
 
 export type AgentThread = {
   id: string;
@@ -31,11 +32,11 @@ export abstract class Agent extends EventEmitter {
   abstract start(): Promise<void>;
   abstract check(): Promise<void>;
   abstract close(): void;
-  abstract create(cwd: string, options?: { unattended?: boolean }): Promise<string>;
+  abstract create(cwd: string, options?: AgentOptions): Promise<string>;
   abstract resume(thread: string, cwd?: string): Promise<void>;
   abstract read(thread: string): Promise<AgentThread>;
   abstract list(cwd: string, limit?: number): Promise<{ threads: AgentThread[]; more: boolean }>;
-  abstract input(thread: string, cwd: string, text: string, files?: LocalAttachment[]): Promise<void>;
+  abstract input(thread: string, cwd: string, text: string, files?: LocalAttachment[], options?: AgentOptions): Promise<void>;
   abstract interrupt(thread: string): Promise<boolean>;
   abstract status(thread: string, cwd?: string): Promise<string>;
 

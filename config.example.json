@@ -1,6 +1,8 @@
 {
   "users": ["@earonesty"],
   "agent": { "driver": "codex", "command": "codex" },
+  "scheduledSandbox": "workspace-write",
+  "scheduledApprovalPolicy": "on-request",
   "root": "~",
   "channels": {
     "#controller": "~/work",

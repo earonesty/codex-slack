@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { Condition } from './condition.ts';
+import type { ApprovalPolicy, SandboxMode } from './config.ts';
 
 export type Job = {
   id: string; name: string; prompt: string; cwd: string; cron: string | null; at: string | null;
@@ -7,6 +8,8 @@ export type Job = {
   enabled: boolean; nextAt: number | null; verbosity?: 'quiet' | 'verbose';
   disableOnFailure?: boolean;
   scheduledBrowserUse?: boolean;
+  scheduledSandbox?: SandboxMode;
+  scheduledApprovalPolicy?: ApprovalPolicy;
   thread?: string; threadKey?: string; condition?: Condition; repeat?: boolean;
   revision?: string; conditionLastChecked?: number; conditionLastExit?: number | null; conditionError?: string | null;
 };

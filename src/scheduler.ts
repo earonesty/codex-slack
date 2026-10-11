@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { CronExpressionParser } from 'cron-parser';
-import { allowedDirectory, record } from './config.ts';
+import { allowedDirectory, record, validateScheduledPermissions } from './config.ts';
 import type { Bridge } from './bridge.ts';
 import { AgentError } from './agent.ts';
 import { turnError } from './turn-error.ts';
@@ -192,6 +192,7 @@ export class Scheduler {
     if (raw.disableOnFailure !== undefined && typeof raw.disableOnFailure !== 'boolean') throw new Error('disableOnFailure must be boolean');
     if (raw.verbosity !== undefined && raw.verbosity !== 'quiet' && raw.verbosity !== 'verbose') throw new Error('verbosity must be quiet or verbose');
     if (raw.scheduledBrowserUse !== undefined && typeof raw.scheduledBrowserUse !== 'boolean') throw new Error('scheduledBrowserUse must be boolean');
+    validateScheduledPermissions(raw);
     let thread = raw.thread === 'current' ? contextThread : raw.thread;
     if (raw.thread !== undefined && (typeof thread !== 'string' || !thread)) throw new Error('thread must be current or an existing Slack-linked session ID');
     const target = typeof thread === 'string' ? this.bridge.store.byThread(thread)
@@ -200,6 +201,9 @@ export class Scheduler {
       throw new Error('thread must belong to the selected channel and exact task directory');
     }
     if (target) thread = target.thread;
+    if (thread && (raw.scheduledSandbox !== undefined || raw.scheduledApprovalPolicy !== undefined)) {
+      throw new Error('scheduledSandbox and scheduledApprovalPolicy apply to new scheduled sessions; existing-thread follow-ups use interactive permissions');
+    }
     let condition: Condition | undefined;
     if (raw.condition !== undefined) {
       const predicate = record(raw.condition);
@@ -224,10 +228,12 @@ export class Scheduler {
       disableOnFailure: raw.disableOnFailure as boolean ?? previous?.disableOnFailure ?? !cron,
       verbosity: raw.verbosity as Job['verbosity'] ?? 'quiet' };
     if (typeof raw.scheduledBrowserUse === 'boolean') job.scheduledBrowserUse = raw.scheduledBrowserUse;
+    if (raw.scheduledSandbox !== undefined) job.scheduledSandbox = raw.scheduledSandbox as Job['scheduledSandbox'];
+    if (raw.scheduledApprovalPolicy !== undefined) job.scheduledApprovalPolicy = raw.scheduledApprovalPolicy as Job['scheduledApprovalPolicy'];
     if (typeof thread === 'string') { job.thread = thread; job.threadKey = target!.key; }
     if (condition) { job.condition = condition; job.repeat = raw.repeat as boolean ?? false; }
     else if (raw.repeat !== undefined) job.repeat = raw.repeat as boolean;
-    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'disableOnFailure', 'scheduledBrowserUse']
+    const sameDefinition = previous && ['name', 'prompt', 'cwd', 'cron', 'at', 'timezone', 'channel', 'user', 'thread', 'threadKey', 'condition', 'repeat', 'verbosity', 'disableOnFailure', 'scheduledBrowserUse', 'scheduledSandbox', 'scheduledApprovalPolicy']
       .every(k => JSON.stringify(previous[k as keyof Job]) === JSON.stringify(job[k as keyof Job]));
     job.revision = sameDefinition ? previous.revision : randomUUID();
     if (sameDefinition) {
@@ -370,14 +376,17 @@ export class Scheduler {
       }
       this.valid(job);
       if (this.stopped) throw new Error('Scheduler stopped before session creation');
-      run.thread = await this.bridge.agent.create(job.cwd, { unattended: true });
+      const permissions = { unattended: true,
+        sandbox: job.scheduledSandbox ?? this.bridge.config.scheduledSandbox ?? 'workspace-write',
+        approvalPolicy: job.scheduledApprovalPolicy ?? this.bridge.config.scheduledApprovalPolicy ?? 'on-request' };
+      run.thread = await this.bridge.agent.create(job.cwd, permissions);
       if (run.key) this.bridge.store.bind(run.key, run.thread);
       this.db.update({ ...run, status: 'running' });
       this.valid(job);
       if (this.stopped) throw new Error('Scheduler stopped before task dispatch');
       const prompt = this.taskPrompt(job);
       const instruction = `${prompt}\n\n[Scheduled execution: ${job.id}]\nThis is one occurrence of an existing task; perform the work now. Do not create another schedule. When no action was taken, nothing changed, and no error, blocker, or question needs attention, return exactly [SILENT] as your final answer. Never use [SILENT] after an action or to hide a failure or request for judgment. Preserve the user's stated authorization and project instructions. Finish with a concise summary of findings, changes, verification, commits/deployment if requested, and any unresolved question.${job.channel ? ' Your output and questions are delivered to the linked Slack thread, where the user can reply.' : ' There is no linked Slack channel. If user judgment is required, finish with the question so it is saved in the local run history.'}`;
-      await this.bridge.agent.input(run.thread, job.cwd, instruction);
+      await this.bridge.agent.input(run.thread, job.cwd, instruction, [], permissions);
       // Completion may arrive before the turn/start acknowledgement; never overwrite it here.
     } catch (error) {
       const saved = this.db.run(run.id)!;

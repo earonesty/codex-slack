@@ -210,6 +210,17 @@ Use `at` with an ISO timestamp including an offset or `Z` instead of `cron` for 
 
 When `"scheduledBrowserUse": false` is set in `config.json`, unattended occurrences are instructed not to use the Codex Browser Use connector, browser-control/CUA, or connector file downloads. The flag selects whether that connector is available; it does not mean “no browser,” “headless only,” or “no interactive browser automation.” Interactive or headless sessions driven through repository-owned CDP, Playwright/Puppeteer, nodriver/Zendriver, and similar tooling remain allowed, as do direct HTTP and repository-owned scripts. If an active scheduled turn nevertheless requests Codex Browser Use approval, the bridge declines it without opening a Slack approval thread. The daemon default is `true`; restart it after changing the setting. A task can override the daemon default with `"scheduledBrowserUse": true` or `false` in its schedule JSON, so a task that specifically requires the Codex connector can enable it while other unattended work is guarded. Unrelated approvals and later human follow-ups remain interactive in either mode.
 
+Codex schedules that create a new session use `scheduledSandbox` and `scheduledApprovalPolicy`. Set them globally in `config.json`, or override either field in a schedule's JSON. The defaults are `"workspace-write"` and `"on-request"`. Sandbox values are `"read-only"`, `"workspace-write"`, and `"danger-full-access"`; approval values are `"on-request"`, `"untrusted"`, and `"never"`. For a personal unattended preference, set:
+
+```json
+{
+  "scheduledSandbox": "danger-full-access",
+  "scheduledApprovalPolicy": "never"
+}
+```
+
+`never` makes blocked commands fail without requesting shell approval; it does not grant access by itself. Restart the daemon after changing global settings. Per-schedule settings take precedence and are saved with the job; omitting a field inherits the global preference. `put` replaces the full definition. Existing-thread follow-ups use interactive permissions and reject these per-schedule overrides. These settings affect the Codex driver; Claude retains its documented unattended bypass mode.
+
 Set `"verbosity":"verbose"` in the task JSON to include run starts, progress, and no-op answers. `list`/`get` show the setting, and `history` retains every run and final answer even when nothing was posted to Slack. Read `get <id>` and save the complete definition with `put` to change verbosity; this does not run the task or move its next occurrence.
 
 The saved prompt defines the user's authorized task; scheduling does not override Codex's permissions or project instructions.
@@ -231,7 +242,7 @@ Only configured users in the configured workspace/channels can send instructions
 
 With the default driver, the daemon spawns `codex app-server` and communicates over stdio. After all turns have been idle for a minute, it recycles that process and its helper process group; the next input transparently resumes the saved session through a fresh app-server. This bounds resources left by completed tool calls. The Claude driver starts a streaming `claude -p` subprocess for each live session and resumes its native session ID after a process or daemon restart. Neither driver starts another model to interpret Slack commands.
 
-Model, reasoning effort, instructions, and memory settings are inherited from the selected agent's effective configuration. Codex scheduled runs explicitly request `sandbox: "danger-full-access"` and `approvalPolicy: "never"`; Claude scheduled runs use `bypassPermissions`. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Ordinary sessions use the driver's normal permission policy. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
+Model, reasoning effort, instructions, and memory settings are inherited from the selected agent's effective configuration. Codex scheduled runs explicitly request the configured `scheduledSandbox` and `scheduledApprovalPolicy`; Claude scheduled runs use `bypassPermissions`. This applies to existing and newly saved jobs, including manual `run` occurrences; task authorization and project instructions still apply. Codex applies sandbox and approval settings together on resume and on every new turn. Human follow-ups read the current project/user Codex configuration rather than inheriting the preceding scheduled turn's permissions, including after idle recycling or daemon restart. Steering an active turn preserves that turn's permissions. Ordinary sessions use the driver's normal permission policy. Directory selection provides project context; it is **not a memory-isolation or filesystem-security boundary**.
 
 Bindings and messages are stored in `stateDir/bridge.sqlite`. SQLite also provides a separate process lease so two daemons cannot use the same state directory. Run only one instance per Slack app token, even with different state directories. The state directory is private to your OS user and contains conversation text; it is not encrypted.
 

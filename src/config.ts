@@ -4,6 +4,14 @@ import path from 'node:path';
 
 export type Channel = { cwd: string };
 export type AgentConfig = { driver: 'codex' | 'claude'; command: string };
+export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
+export type ApprovalPolicy = 'never' | 'on-request' | 'untrusted';
+export type AgentOptions = { unattended?: boolean; sandbox?: SandboxMode; approvalPolicy?: ApprovalPolicy };
+
+export function validateScheduledPermissions(raw: Record<string, unknown>): void {
+  if (raw.scheduledSandbox !== undefined && (typeof raw.scheduledSandbox !== 'string' || !['read-only', 'workspace-write', 'danger-full-access'].includes(raw.scheduledSandbox))) throw new Error('Invalid scheduledSandbox');
+  if (raw.scheduledApprovalPolicy !== undefined && (typeof raw.scheduledApprovalPolicy !== 'string' || !['never', 'on-request', 'untrusted'].includes(raw.scheduledApprovalPolicy))) throw new Error('Invalid scheduledApprovalPolicy');
+}
 export type Config = {
   root: string;
   teamId: string;
@@ -12,6 +20,8 @@ export type Config = {
   stateDir: string;
   agent: AgentConfig;
   scheduledBrowserUse: boolean;
+  scheduledSandbox?: SandboxMode;
+  scheduledApprovalPolicy?: ApprovalPolicy;
 };
 
 export function record(value: unknown): Record<string, unknown> {
@@ -51,11 +61,14 @@ export function parseConfig(value: unknown): Config {
   if (raw.codexBin !== undefined && (typeof raw.codexBin !== 'string' || !raw.codexBin.trim())) throw new Error('Invalid codexBin');
   if (raw.codexBin !== undefined && raw.agent !== undefined) throw new Error('Use agent.command instead of codexBin when agent is configured');
   if (raw.scheduledBrowserUse !== undefined && typeof raw.scheduledBrowserUse !== 'boolean') throw new Error('scheduledBrowserUse must be boolean');
+  validateScheduledPermissions(raw);
   return {
     root, teamId: raw.teamId, allowedUserIds: raw.allowedUserIds as string[], channels,
     stateDir: expandPath(raw.stateDir as string ?? '~/.local/state/codex-slack'),
     agent: { driver, command: String(agentRaw.command ?? raw.codexBin ?? driver) },
     scheduledBrowserUse: raw.scheduledBrowserUse as boolean ?? true,
+    scheduledSandbox: raw.scheduledSandbox as SandboxMode ?? 'workspace-write',
+    scheduledApprovalPolicy: raw.scheduledApprovalPolicy as ApprovalPolicy ?? 'on-request',
   };
 }
 

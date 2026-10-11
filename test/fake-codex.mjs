@@ -6,6 +6,7 @@ let initialized = false;
 let sequence = 0;
 const threads = new Map();
 const questions = new Map();
+let config = {};
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);
   if (message.method === 'initialized') { initialized = true; continue; }
@@ -28,6 +29,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   const { id, method, params } = message;
   if (method === 'initialize') { send({ id, result: { userAgent: 'fake-codex' } }); continue; }
   if (!initialized) { send({ id, error: { code: -32600, message: 'Handshake missing' } }); continue; }
+  if (method === 'test/config') { config = params; send({ id, result: {} }); continue; }
+  if (method === 'config/read') { send({ id, result: { config } }); continue; }
   if (method === 'test/hang') continue;
   if (method === 'test/invalid-json') { process.stdout.write('not json\n'); continue; }
   if (method === 'test/fragmented') {
@@ -56,13 +59,14 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   }
   const thread = threads.get(params?.threadId) ?? { id: params?.threadId, cwd: '/restored', status: { type: 'idle' }, turns: [] };
   threads.set(thread.id, thread);
+  if (method === 'thread/resume') thread.resumeParams = params;
   if (method === 'thread/resume' || method === 'thread/read') { send({ id, result: { thread } }); continue; }
   if (method === 'turn/start') {
     const text = params.input[0].text;
     const beforePolicy = text.split(/\n\n\[(?:Unattended browser policy|Scheduled execution:)/)[0];
     const task = beforePolicy.split('Continue this existing conversation using the saved operator instruction below. Do not create another schedule.\n\n').at(-1);
     if (task === 'reject') { send({ id, error: { code: -32602, message: 'test rejection' } }); continue; }
-    const turn = { id: `turn-${++sequence}`, status: 'inProgress', items: [], input: params.input };
+    const turn = { id: `turn-${++sequence}`, status: 'inProgress', items: [], input: params.input, startParams: params };
     thread.turns.push(turn); thread.status = { type: 'active' };
     notify('turn/started', { threadId: thread.id, turn });
     send({ id, result: { turn } });

@@ -30,7 +30,7 @@ function fixture(t: TestContext, postFailure = false, postDelay = 0, check?: Che
   const db = new ScheduleStore(':memory:');
   const outputs: (Message & { key: string })[] = [];
   const roots: { channel: string; text: string }[] = [];
-  const config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: dir } }, stateDir: dir, agent: { driver: 'codex' as const, command: 'unused' }, scheduledBrowserUse: false };
+  const config = { root: dir, teamId: 'T123', allowedUserIds: ['U123'], channels: { C123: { cwd: dir } }, stateDir: dir, agent: { driver: 'codex' as const, command: 'unused' }, scheduledBrowserUse: false, scheduledSandbox: 'danger-full-access' as const, scheduledApprovalPolicy: 'never' as const };
   const bridge = new Bridge(config, store, codex, async (binding, message) => { outputs.push({ key: binding.key, ...message }); });
   let time = Date.parse('2026-09-13T15:00:00Z');
   const scheduler = new Scheduler(bridge, db, async (channel, text) => {
@@ -108,6 +108,22 @@ test('overdue recurring work catches up once; one-shot work is consumed once', a
   await f.scheduler.tick(); assert.equal(f.roots.length, 2);
   assert.equal(f.db.get('once')?.enabled, false);
   assert.equal(f.db.get('once')?.nextAt, null);
+});
+
+test('per-schedule permissions override the personal global preference', async t => {
+  const f = fixture(t);
+  assert.throws(() => f.scheduler.put({ ...f.job, scheduledSandbox: 'invalid' }), /scheduledSandbox/);
+  assert.throws(() => f.scheduler.put({ ...f.job, scheduledApprovalPolicy: false }), /scheduledApprovalPolicy/);
+  const job = f.scheduler.put({ ...f.job, scheduledSandbox: 'read-only', scheduledApprovalPolicy: 'on-request' });
+  assert.equal(f.db.get(job.id)?.scheduledSandbox, 'read-only');
+  assert.equal(f.db.get(job.id)?.scheduledApprovalPolicy, 'on-request');
+  const run = await f.scheduler.launch(job);
+  await until(() => f.db.run(run.id)?.status === 'completed');
+  const data = record(record(await f.rpc.request('thread/read', { threadId: run.thread })).thread);
+  assert.deepEqual(data.startParams, { cwd: f.dir, sandbox: 'read-only', approvalPolicy: 'on-request' });
+  const params = record(record((data.turns as unknown[]).at(-1)).startParams);
+  assert.equal(params.approvalPolicy, 'on-request');
+  assert.deepEqual(params.sandboxPolicy, { type: 'readOnly', networkAccess: false });
 });
 
 test('local-only tasks preserve final output and create no Slack message', async t => {

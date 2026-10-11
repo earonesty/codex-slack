@@ -31,6 +31,13 @@ test('configuration requires a workspace, explicit users, channel IDs, and exist
   assert.throws(() => parseConfig({ ...config, channels: { '#name': { cwd: '/tmp' } } }), /Invalid channel/);
   const valid = parseConfig({ ...config, root: tmpdir(), channels: { C123: { cwd: tmpdir() } } });
   assert.equal(valid.scheduledBrowserUse, true);
+  assert.equal(valid.scheduledSandbox, 'workspace-write');
+  assert.equal(valid.scheduledApprovalPolicy, 'on-request');
+  const personal = parseConfig({ ...config, scheduledSandbox: 'danger-full-access', scheduledApprovalPolicy: 'never' });
+  assert.equal(personal.scheduledSandbox, 'danger-full-access');
+  assert.equal(personal.scheduledApprovalPolicy, 'never');
+  assert.throws(() => parseConfig({ ...config, scheduledSandbox: ['workspace-write'] }), /scheduledSandbox/);
+  assert.throws(() => parseConfig({ ...config, scheduledApprovalPolicy: 'auto' }), /scheduledApprovalPolicy/);
   assert.equal(parseConfig({ ...config, scheduledBrowserUse: false }).scheduledBrowserUse, false);
   assert.throws(() => parseConfig({ ...config, scheduledBrowserUse: 'no' }), /scheduledBrowserUse/);
   assert.equal(authorized(valid, 'T123', 'U123', 'C123'), true);
