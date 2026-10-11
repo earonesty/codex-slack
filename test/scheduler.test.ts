@@ -391,7 +391,42 @@ test('quiet delivery failure retains results and is not retried on completion or
   assert.equal(f.roots.length, 1);
   f.scheduler.start(); await sleep(30);
   assert.equal(f.roots.length, 1);
-  await assert.rejects(f.scheduler.launch(f.db.get('weekly')!), /blocking/);
+  const next = await f.scheduler.launch(f.db.get('weekly')!);
+  await until(() => f.db.run(next.id)?.finished !== null);
+  assert.notEqual(next.thread, run.thread);
+  assert.equal(f.roots.length, 2);
+  assert.equal(f.db.run(run.id)?.status, 'uncertain');
+});
+
+test('historical uncertainty permits future recurring and one-shot work without replay', async t => {
+  const f = fixture(t);
+  const job = f.scheduler.put(f.job);
+  f.db.add({ id: 'old-uncertain', jobId: job.id, cwd: job.cwd, thread: 'old-thread', key: null,
+    status: 'uncertain', started: 1, finished: null, output: 'Saved result', error: 'Bridge stopped' });
+  assert.equal(record(await f.scheduler.command({ action: 'status' })).active, 0);
+  f.setTime(job.nextAt!); await f.scheduler.tick();
+  await until(() => f.db.history(job.id)[0]?.status === 'completed');
+  assert.equal(f.db.history(job.id).length, 2);
+  assert.equal(f.db.run('old-uncertain')?.output, 'Saved result');
+  assert.equal(f.db.get(job.id)?.enabled, true);
+  const nested = path.join(f.dir, 'nested'); mkdirSync(nested);
+  const once = f.scheduler.put({ ...f.job, id: 'once', cwd: nested, cron: null, at: '2026-09-15T00:00:00Z' });
+  f.setTime(once.nextAt!); await f.scheduler.tick();
+  await until(() => f.db.history(once.id)[0]?.status === 'completed');
+  assert.equal(f.db.history(once.id).length, 1);
+  assert.equal(f.roots.length, 2);
+});
+
+test('uncertain work still blocks overlaps while its agent turn is live', async t => {
+  const f = fixture(t);
+  const job = f.scheduler.put({ ...f.job, prompt: 'hold' });
+  const run = await f.scheduler.launch(job);
+  f.db.update({ ...f.db.run(run.id)!, status: 'uncertain' });
+  assert.equal(record(await f.scheduler.command({ action: 'status' })).active, 1);
+  await assert.rejects(f.scheduler.launch(job), /Active work/);
+  await f.codex.interrupt(run.thread!);
+  await until(() => f.codex.active.size === 0 && f.db.run(run.id)?.finished !== null);
+  assert.equal(record(await f.scheduler.command({ action: 'status' })).active, 0);
 });
 
 test('removing a running task retains its pinned destination and quiet policy', async t => {
@@ -414,6 +449,8 @@ test('restart exposes a previously invisible unfinished quiet run without replay
   await until(() => f.outputs.some(o => o.text.includes('bridge stopped')));
   assert.equal(f.roots.length, 1);
   assert.equal(f.db.run('interrupted')?.status, 'uncertain');
+  assert.equal(record(await f.scheduler.command({ action: 'status' })).active, 0);
+  assert.ok(f.outputs.some(o => o.text.includes('future scheduled occurrences remain enabled')));
 });
 
 function seedSession(f: ReturnType<typeof fixture>) {

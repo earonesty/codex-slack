@@ -104,7 +104,7 @@ export class Scheduler {
       await this.ensureRoot(run);
       const saved = this.db.run(run.id)!;
       if (saved.key) this.bridge.say(saved.key,
-        'The bridge stopped during this scheduled run. It has not been repeated. Use !status to inspect it; the schedule is blocked until this uncertain run is resolved.', `schedule-recovery:${run.id}`);
+        'The bridge stopped during this scheduled run. Its outcome is uncertain and it has not been repeated. Use !status to inspect it; future scheduled occurrences remain enabled.', `schedule-recovery:${run.id}`);
     }
     await this.bridge.flush();
   }
@@ -306,8 +306,14 @@ export class Scheduler {
     this.db.save(job);
     return result.code === 0;
   }
+  private blockingRuns(): Run[] {
+    // Uncertainty is historical information, not a permanent project lock.
+    // Keep observing uncertain runs so any late completion is still recorded.
+    return this.db.active().filter(run => run.status !== 'uncertain'
+      || this.bridge.agent.active.has(run.thread ?? this.runJob(run)?.thread ?? ''));
+  }
   private busy(job: Job): boolean {
-    if (this.db.active().some(run => run.jobId === job.id || overlaps(run.cwd, job.cwd))) return true;
+    if (this.blockingRuns().some(run => run.jobId === job.id || overlaps(run.cwd, job.cwd))) return true;
     return [...this.bridge.agent.active.keys()].some(thread => {
       const binding = this.bridge.store.byThread(thread);
       return binding && overlaps(binding.cwd, job.cwd);
@@ -343,11 +349,11 @@ export class Scheduler {
       return this.db.run(run.id)!;
     }
     if (this.busy(job)) {
-      if (!scheduled) throw new Error('Another run or uncertain result is blocking this project. Inspect history before trying again.');
+      if (!scheduled) throw new Error('Active work is blocking this project. Wait for it to finish before trying again.');
       // Recurring occurrences are skipped; one-shot work waits until the folder is free.
       if (!job.cron) return { ...run, status: 'skipped', error: 'Project is busy; one-shot task remains due' };
       job.nextAt = nextOccurrence(job.cron, job.timezone, this.now());
-      this.db.claim(job, { ...run, status: 'skipped', finished: this.now(), error: 'Project has active or uncertain work' });
+      this.db.claim(job, { ...run, status: 'skipped', finished: this.now(), error: 'Project has active work' });
       return this.db.run(run.id)!;
     }
     if (!await this.conditionPasses(job, scheduled)) return { ...run, status: 'skipped', finished: this.now(), error: 'Condition did not trigger; inspect schedule condition state' };
@@ -457,7 +463,7 @@ export class Scheduler {
   async command(value: unknown): Promise<unknown> {
     const raw = record(value);
     switch (raw.action) {
-      case 'status': return { scheduler: 'ready', jobs: this.db.list().length, active: this.db.active().length,
+      case 'status': return { scheduler: 'ready', jobs: this.db.list().length, active: this.blockingRuns().length,
         channels: this.bridge.config.channels, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
       case 'list': return this.db.list();
       case 'put': return this.put(raw.job, typeof raw.contextThread === 'string' ? raw.contextThread : undefined);

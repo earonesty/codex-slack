@@ -36,7 +36,7 @@ State directory defaults to CODEX_SLACK_STATE_DIR or ~/.local/state/codex-slack.
     const thread = values.session ?? process.env.CODEX_THREAD_ID;
     if (!thread) throw new Error('Pass --session or run from a Slack-linked Codex session.');
     const status = record(await controlRequest(path.join(stateDir, 'control.sock'), { action: 'status' }));
-    if (status.scheduler !== 'ready' || status.active !== 0) throw new Error('Scheduler must be ready with no active or uncertain scheduled runs before restart.');
+    if (status.scheduler !== 'ready' || status.active !== 0) throw new Error('Scheduler must be ready with no active scheduled runs before restart.');
     const invocation = execFileSync('systemctl', ['--user', 'show', 'codex-slack.service', '-p', 'InvocationID', '--value'],
       { encoding: 'utf8', timeout: 5_000 }).trim();
     if (!/^[a-f0-9]{32}$/.test(invocation)) throw new Error('Could not identify the running service invocation.');

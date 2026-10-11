@@ -227,9 +227,9 @@ The saved prompt defines the user's authorized task; scheduling does not overrid
 
 `channel:auto` chooses the closest linked directory, preferring an exact match. The chosen destination is pinned. Changed ownership disables the schedule on its next attempt until the definition is updated. `channel:null`, or no matching linked directory, saves final output locally in `history` without sending to Slack. Interactive local-only work requires inspecting the saved session locally.
 
-Schedules and run history live in `schedules.sqlite` under the existing private state directory. The CLI uses `control.sock` (mode 0600); it does not need Slack credentials. The timer checks every five seconds and requires the daemon/machine to be running. After downtime, each overdue task runs once rather than replaying all missed intervals. Active or uncertain work in the same or nested directory blocks scheduled launches: recurring occurrences are skipped and one-shot tasks wait. Work in separate directories can proceed independently.
+Schedules and run history live in `schedules.sqlite` under the existing private state directory. The CLI uses `control.sock` (mode 0600); it does not need Slack credentials. The timer checks every five seconds and requires the daemon/machine to be running. After downtime, each overdue task runs once rather than replaying all missed intervals. Active work in the same or nested directory blocks scheduled launches: recurring occurrences are skipped and one-shot tasks wait. Work in separate directories can proceed independently.
 
-If the bridge stops before an agent session is created, recovery records the occurrence as interrupted and leaves future runs unblocked because no task prompt could have been dispatched. An interrupted dispatch after session creation is recorded as uncertain and is never automatically replayed. Inspect the saved session, Slack thread, and any changes before using `resolve <run-id> --note "what was verified"` to release that block. `history` returns the latest 30 runs with final output, session IDs, and failures. Existing outbox handling retains uncertain Slack deliveries without blindly duplicating them.
+If the bridge stops before an agent session is created, recovery records the occurrence as interrupted and leaves future runs unblocked because no task prompt could have been dispatched. An interrupted dispatch after session creation is recorded as uncertain and is never automatically replayed. Uncertain history does not block future occurrences; only a still-active agent turn does. Existing uncertain runs also stop blocking automatically after this update. Inspect the saved session, Slack thread, and any changes before manually retrying an interrupted occurrence. Use `resolve <run-id> --note "what was verified"` to record an inspection in history. `history` returns the latest 30 runs with final output, session IDs, and failures. Existing outbox handling retains uncertain Slack deliveries without blindly duplicating them.
 
 Use `--state-dir` or `CODEX_SLACK_STATE_DIR` when the daemon uses a nondefault state directory. No crontab changes or daemon restart are needed to manage tasks.
 | `!bind` | Show the directory picker in an unbound channel |
@@ -298,7 +298,7 @@ node bin/codex-slack-restart.mjs status
 The helper defaults to `CODEX_THREAD_ID`; use `--session <Codex thread ID>` when
 needed. `--state-dir` and `CODEX_SLACK_STATE_DIR` select a nondefault state directory.
 It requires a saved Slack session with an owner and a healthy scheduler with no active
-or uncertain scheduled runs. Restarting also interrupts other interactive work in this daemon.
+scheduled runs. Restarting also interrupts other interactive work in this daemon.
 
 Before requesting a restart, it saves the session ID, pinned Slack binding, owner,
 and old systemd invocation ID in the bridge's private `bridge.sqlite` database.
